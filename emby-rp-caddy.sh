@@ -1,217 +1,98 @@
 #!/bin/bash
 # ============================================================
-# Emby Dynamic Proxy Manager v2.1.0
-#
-# 基于稳定版升级
+# Emby Dynamic Proxy Manager v1.2 Turbo Lite
+# 动态 Emby 反代管理器
 #
 # 功能:
-#  - 动态Emby反代
-#  - IPv4 / IPv6访问
-#  - WebSocket
-#  - Range断点续传
-#  - 大文件流式代理
-#  - 域名白名单
-#  - 白名单为空=不限
-#  - 自动安装
-#  - 自动升级
-#  - 自动备份
-#  - 版本管理
+# - IPv4 / IPv6
+# - HTTPS上游
+# - WebSocket
+# - Range流媒体播放
+# - KeepAlive连接复用
+# - 白名单控制
+# - 白名单为空默认放行
+# - Caddy优化
 #
+# 不修改系统TCP参数
 # ============================================================
 
 APP_DIR="/opt/emby-proxy"
 SERVICE="/etc/systemd/system/emby-proxy.service"
 CADDY="/etc/caddy/Caddyfile"
-
 ALLOW="$APP_DIR/allow.list"
-VERSION_FILE="$APP_DIR/version"
-
-BACKUP_DIR="/opt/emby-proxy-backup"
-
 PORT=8787
 
-VERSION="2.1.0"
-
-
-# ============================
-# root检查
-# ============================
 
 check_root(){
-
 [ "$(id -u)" = "0" ] || {
 echo "请使用root运行"
 exit 1
 }
-
 }
 
-
-
-# ============================
-# 安装Node
-# ============================
 
 install_node(){
 
 command -v node >/dev/null && {
-
-echo "Node已安装: $(node -v)"
-
+echo "Node 已安装"
 return
-
 }
 
-
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-
 apt update
-
 apt install -y nodejs
 
 }
 
 
 
-# ============================
-# 安装Caddy
-# ============================
-
 install_caddy(){
 
 command -v caddy >/dev/null && {
-
-echo "Caddy已安装"
-
+echo "Caddy 已安装"
 return
-
 }
 
 
 apt update
 
-
-apt install -y \
-curl \
-gnupg \
-debian-keyring \
-debian-archive-keyring \
-apt-transport-https
+apt install -y curl gnupg debian-keyring debian-archive-keyring apt-transport-https
 
 
-
-curl -1sLf \
-https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
 | gpg --dearmor \
 -o /usr/share/keyrings/caddy.gpg
 
 
-
-curl -1sLf \
-https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
+curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
 > /etc/apt/sources.list.d/caddy.list
 
 
-
 apt update
-
 apt install -y caddy
-
 
 }
 
 
 
-# ============================
-# 初始化目录
-# ============================
 
 init_dir(){
 
 mkdir -p "$APP_DIR"
 
-mkdir -p "$BACKUP_DIR"
 
-
-
-if [ ! -f "$ALLOW" ];then
-
-
-cat >"$ALLOW"<<EOF
+[ -f "$ALLOW" ] || cat >"$ALLOW"<<EOF
 # Emby白名单
-# 留空表示不限域名
-#
+# 留空=允许所有域名
 # 示例:
 # emby.example.com
 
 EOF
 
-
-fi
-
-
 }
 
 
 
-# ============================
-# 读取版本
-# ============================
-
-get_version(){
-
-[ -f "$VERSION_FILE" ] \
-&& cat "$VERSION_FILE" \
-|| echo "未安装"
-
-}
-
-
-
-# ============================
-# 写入版本
-# ============================
-
-write_version(){
-
-echo "$VERSION" > "$VERSION_FILE"
-
-}
-
-
-
-# ============================
-# 备份旧版本
-# ============================
-
-backup_old(){
-
-
-[ -d "$APP_DIR" ] || return
-
-
-tar czf \
-"$BACKUP_DIR/emby-proxy-$(date +%Y%m%d-%H%M%S).tar.gz" \
-"$APP_DIR" \
-2>/dev/null
-
-
-echo "旧版本备份完成"
-
-
-}
-
-
-
-# ============================
-# 生成server.js
-# 后续部分补充
-# ============================
-
-# ============================
-# 生成Node代理核心
-# 基于原稳定版
-# ============================
 
 create_node(){
 
@@ -225,107 +106,89 @@ const PORT=8787;
 const ALLOW="/opt/emby-proxy/allow.list";
 
 
-// ============================
-// 白名单缓存
-// 5分钟刷新一次
-// 空白名单=不限
-// ============================
+// 连接复用
+const httpAgent=new http.Agent({
+keepAlive:true,
+maxSockets:1024,
+maxFreeSockets:256,
+timeout:60000
+});
+
+
+const httpsAgent=new https.Agent({
+keepAlive:true,
+maxSockets:1024,
+maxFreeSockets:256,
+timeout:60000,
+rejectUnauthorized:false
+});
+
 
 let allowCache=[];
 let allowTime=0;
 
 
+// 白名单缓存60秒
 function allowList(){
 
 let now=Date.now();
 
-
-if(now-allowTime<300000){
-
+if(now-allowTime<60000)
 return allowCache;
-
-}
 
 
 try{
 
-
 allowCache=fs.readFileSync(ALLOW,"utf8")
 .split("\n")
 .map(v=>v.trim())
-.filter(v=>v&&!v.startsWith("#"))
-.map(v=>
-v.replace(/^https?:\/\//,"")
-.replace(/\/.*$/,"")
-.toLowerCase()
-);
-
+.filter(v=>v&&!v.startsWith("#"));
 
 
 allowTime=now;
 
-
-}catch(e){
-
-
-allowCache=[];
-
-
-}
-
-
 return allowCache;
 
 
+}catch(e){
+
+return [];
+
+}
+
 }
 
 
 
-
-// ============================
-// 域名白名单
-// 空=全部允许
-// ============================
-
+// 白名单为空=不限
 function domainAllowed(host){
-
 
 let list=allowList();
 
-
-host=(host||"").toLowerCase();
-
-
-
-if(!list.length){
-
+if(!list.length)
 return true;
 
-}
 
+host=host.toLowerCase();
 
 
 return list.some(d=>{
 
+d=d.replace(/^https?:\/\//,"")
+.replace(/\/.*$/,"")
+.trim()
+.toLowerCase();
 
-return host===d ||
-host.endsWith("."+d);
 
+return host===d||host.endsWith("."+d);
 
 });
-
 
 }
 
 
 
-
-// ============================
-// 解析代理目标
-// ============================
-
 function parseTarget(req){
-
 
 let u=new URL(
 req.url,
@@ -333,42 +196,24 @@ req.url,
 );
 
 
-
 let raw=u.pathname.substring(1);
-
 
 
 if(
 !raw.startsWith("http://") &&
 !raw.startsWith("https://")
-){
-
+)
 return null;
-
-}
-
-
 
 
 let target=new URL(raw);
 
 
-
-if(!domainAllowed(target.hostname)){
-
-
+if(!domainAllowed(target.hostname))
 return {
-
 deny:true,
-
 host:target.hostname
-
 };
-
-
-}
-
-
 
 
 target.pathname=
@@ -378,89 +223,60 @@ u.pathname.replace(
 )||"/";
 
 
-
 target.search=u.search;
-
 
 
 return target;
 
-
 }
-
-
-
-
-
-// ============================
-// HTTP代理
-// ============================
 
 function proxy(req,res,target){
 
+let client=target.protocol==="https:"?https:http;
 
-let client=
-target.protocol==="https:"
-?
-https
-:
-http;
-
+let agent=target.protocol==="https:"?httpsAgent:httpAgent;
 
 
 let headers={
-...req.headers
+...req.headers,
+host:target.host,
+"x-real-ip":req.socket.remoteAddress,
+"x-forwarded-for":req.socket.remoteAddress
 };
 
 
-
-headers.host=target.host;
-
-
-
-headers["x-forwarded-for"]=
-req.socket.remoteAddress||"";
+// 防止重复压缩
+delete headers["accept-encoding"];
 
 
-headers["x-real-ip"]=
-req.socket.remoteAddress||"";
-
-
-headers["x-forwarded-proto"]=
-target.protocol.replace(":","");
-
+// 保留Range
+if(req.headers.range)
+headers.range=req.headers.range;
 
 
 let p=client.request({
 
-
 protocol:target.protocol,
 
-
 hostname:target.hostname,
-
 
 port:
 target.port||
 (target.protocol==="https:"?443:80),
 
-
 method:req.method,
-
 
 path:
 target.pathname+
 target.search,
 
-
 headers,
 
+agent,
 
 rejectUnauthorized:false,
 
-
-timeout:0
-
+highWaterMark:1024*1024
 
 
 },r=>{
@@ -472,9 +288,7 @@ r.headers
 );
 
 
-
 r.pipe(res);
-
 
 
 });
@@ -483,75 +297,69 @@ r.pipe(res);
 
 p.on("error",e=>{
 
-
-if(!res.headersSent){
-
 res.writeHead(502);
-
-}
-
 
 res.end(
 "Proxy Error:\n"+
 e.message
 );
 
-
 });
 
 
 req.pipe(p);
-
 
 }
 
 
 
 
-// ============================
-// WebSocket代理
-// 保持原稳定逻辑
-// ============================
-
-function proxyWS(req,socket,target){
+const server=http.createServer((req,res)=>{
 
 
-let client=
-target.protocol==="https:"
-?
-https
-:
-http;
+let target=parseTarget(req);
+
+
+if(!target){
+
+res.writeHead(200,{
+"Content-Type":
+"text/plain;charset=utf-8"
+});
+
+
+res.end(
+`Emby Dynamic Proxy v1.2 Turbo Lite
+
+代理运行正常
+
+使用:
+http://${req.headers.host}/https://Emby地址
+
+`
+);
+
+return;
+
+}
 
 
 
-let p=client.request({
+if(target.deny){
+
+res.writeHead(403);
+
+res.end(
+"403 Domain not allowed\n"+
+target.host
+);
+
+return;
+
+}
 
 
-protocol:target.protocol,
-
-
-hostname:target.hostname,
-
-
-port:
-target.port||
-(target.protocol==="https:"?443:80),
-
-
-method:req.method,
-
-
-path:
-target.pathname+
-target.search,
-
-
-headers:req.headers,
-
-
-rejectUnauthorized:false
-
+proxy(req,res,target);
 
 
 });
@@ -559,20 +367,79 @@ rejectUnauthorized:false
 
 
 
-p.on("upgrade",(ps)=>{
+// WebSocket代理
 
+server.on("upgrade",(req,socket)=>{
+
+
+let target=parseTarget(req);
+
+
+if(!target||target.deny){
+
+socket.destroy();
+return;
+
+}
+
+
+
+let client=
+target.protocol==="https:"?https:http;
+
+
+let agent=
+target.protocol==="https:"?httpsAgent:httpAgent;
+
+
+
+let headers={
+...req.headers,
+host:target.host
+};
+
+
+
+let p=client.request({
+
+protocol:target.protocol,
+
+hostname:target.hostname,
+
+port:
+target.port||
+(target.protocol==="https:"?443:80),
+
+method:req.method,
+
+path:
+target.pathname+
+target.search,
+
+headers,
+
+agent,
+
+rejectUnauthorized:false
+
+
+});
+
+
+
+p.on("upgrade",(proxySocket)=>{
 
 
 socket.write(
-"HTTP/1.1 101 Switching Protocols\r\n\r\n"
+"HTTP/1.1 101 Switching Protocols\r\n"+
+"Upgrade: websocket\r\n"+
+"Connection: Upgrade\r\n\r\n"
 );
 
 
+proxySocket.pipe(socket);
 
-ps.pipe(socket);
-
-socket.pipe(ps);
-
+socket.pipe(proxySocket);
 
 
 });
@@ -581,142 +448,29 @@ socket.pipe(ps);
 
 p.on("error",()=>{
 
-
 socket.destroy();
 
-
 });
-
 
 
 p.end();
 
 
-
-}
-
-
-
-
-
-// ============================
-// HTTP入口
-// ============================
-
-const server=http.createServer((req,res)=>{
-
-
-let target=parseTarget(req);
-
-
-
-if(!target){
-
-
-res.writeHead(200,{
-
-"Content-Type":
-"text/plain;charset=utf-8"
-
 });
 
 
-res.end(
-`Emby Dynamic Proxy v2.1.0
-
-使用:
-
-http://服务器/https://Emby地址
-
-`
-);
-
-
-return;
-
-
-}
-
-
-
-if(target.deny){
-
-
-res.writeHead(403);
-
-
-res.end(
-"Domain not allowed\n"+
-target.host
-);
-
-
-return;
-
-
-}
-
-
-
-proxy(req,res,target);
-
-
-
-});
-
-
-
-
-
-
-// ============================
-// WebSocket升级
-// ============================
-
-server.on("upgrade",(req,socket)=>{
-
-
-let target=parseTarget(req);
-
-
-
-if(!target||target.deny){
-
-
-socket.destroy();
-
-return;
-
-}
-
-
-
-proxyWS(req,socket,target);
-
-
-});
-
-
-
-
-
-
-// ============================
-// 保持原稳定监听方式
-// ============================
 
 server.timeout=0;
 
-server.keepAliveTimeout=0;
+server.keepAliveTimeout=65000;
 
-server.headersTimeout=0;
+server.headersTimeout=70000;
+
+server.maxConnections=2000;
 
 
 
-server.listen(
-PORT,
-"0.0.0.0",
-()=>{
+server.listen(PORT,"0.0.0.0",()=>{
 
 console.log(
 "Emby proxy running:"+PORT
@@ -727,29 +481,19 @@ console.log(
 NODE
 
 }
-
-
-
-# ============================
-# systemd服务
-# ============================
-
 create_service(){
-
 
 cat >"$SERVICE"<<EOF
 [Unit]
-Description=Emby Dynamic Proxy v$VERSION
+Description=Emby Dynamic Proxy v1.2 Turbo Lite
 After=network.target
-
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/node $APP_DIR/server.js
+ExecStart=/usr/bin/node --max-old-space-size=512 $APP_DIR/server.js
 Restart=always
 RestartSec=3
-LimitNOFILE=65535
-
+LimitNOFILE=1048576
 
 [Install]
 WantedBy=multi-user.target
@@ -757,20 +501,15 @@ EOF
 
 
 systemctl daemon-reload
-
 systemctl enable emby-proxy
-
+systemctl restart emby-proxy
 
 }
 
 
 
-# ============================
-# Caddy配置
-# ============================
 
 create_caddy(){
-
 
 mkdir -p /etc/caddy
 
@@ -778,21 +517,27 @@ mkdir -p /etc/caddy
 cat >"$CADDY"<<EOF
 :80 {
 
- reverse_proxy 127.0.0.1:$PORT {
+    reverse_proxy 127.0.0.1:$PORT {
 
-  flush_interval -1
+        flush_interval -1
 
-  transport http {
+        transport http {
 
-   dial_timeout 10s
+            dial_timeout 5s
 
-   read_buffer 4096
+            response_header_timeout 60s
 
-   write_buffer 4096
+            keepalive 60s
 
-  }
+            keepalive_idle_conns 256
 
- }
+            read_buffer 65536
+
+            write_buffer 65536
+
+        }
+
+    }
 
 }
 EOF
@@ -813,51 +558,36 @@ return 1
 
 systemctl restart caddy
 
+}
+
+
+
+
+clean_old(){
+
+systemctl stop emby-proxy 2>/dev/null
+
+systemctl disable emby-proxy 2>/dev/null
+
+
+rm -f "$SERVICE"
+
+rm -rf "$APP_DIR"
+
+
+systemctl daemon-reload
 
 }
 
 
 
-# ============================
-# 安装 / 升级
-# ============================
 
 install(){
 
-
-echo
-echo "================================"
-echo " Emby Dynamic Proxy v$VERSION"
-echo "================================"
-echo
+echo "开始安装 Emby Dynamic Proxy v1.2 Turbo Lite"
 
 
-
-init_dir
-
-
-
-if [ -f "$VERSION_FILE" ];then
-
-
-echo "检测到已安装"
-
-echo "当前版本: $(get_version)"
-
-echo "升级版本: $VERSION"
-
-
-backup_old
-
-
-else
-
-
-echo "首次安装"
-
-
-fi
-
+[ -f "$SERVICE" ] && clean_old
 
 
 install_node
@@ -865,60 +595,97 @@ install_node
 install_caddy
 
 
+init_dir
 
 create_node
 
 create_service
 
-create_caddy
 
 
+if create_caddy
 
-write_version
+then
 
+echo
+echo "=========================="
+echo "安装完成"
+echo "=========================="
+echo
 
-
-systemctl restart emby-proxy
-
-
+echo "白名单文件:"
+echo "$ALLOW"
 
 echo
 
-echo "完成"
+echo "规则:"
+echo "白名单为空=允许全部Emby地址"
 
-echo "当前版本: $(get_version)"
 
+else
+
+echo "安装失败"
+
+clean_old
+
+fi
 
 }
-# ============================
-# 添加白名单
-# ============================
 
+
+
+
+
+uninstall(){
+
+echo "卸载中..."
+
+
+systemctl stop emby-proxy 2>/dev/null
+
+systemctl disable emby-proxy 2>/dev/null
+
+
+rm -f "$SERVICE"
+
+rm -rf "$APP_DIR"
+
+
+systemctl daemon-reload
+
+
+rm -f "$CADDY"
+
+touch "$CADDY"
+
+
+systemctl restart caddy
+
+
+echo "卸载完成"
+
+}
 add_domain(){
 
 init_dir
 
 
-read -p "输入域名: " d
+read -p "输入根域名: " d
 
 
 [ -z "$d" ] && return
 
 
-# 清理协议和路径
-
-d=$(echo "$d" | sed \
-'s#https\?://##;s#/.*##')
+d=$(echo "$d" | sed 's#https\?://##;s#/.*##')
 
 
+grep -qx "$d" "$ALLOW" && {
 
-if grep -qx "$d" "$ALLOW";then
-
-echo "已存在"
+echo "已经存在"
 
 return
 
-fi
+}
 
 
 echo "$d" >> "$ALLOW"
@@ -926,24 +693,16 @@ echo "$d" >> "$ALLOW"
 
 echo "添加成功: $d"
 
-
 }
 
 
 
-# ============================
-# 删除白名单
-# ============================
 
 del_domain(){
-
-
-echo
 
 echo "当前白名单:"
 
 grep -v "^#" "$ALLOW"
-
 
 echo
 
@@ -951,58 +710,34 @@ echo
 read -p "删除域名: " d
 
 
-[ -z "$d" ] && return
-
-
 sed -i "/^$d$/d" "$ALLOW"
 
 
 echo "删除完成"
 
-
 }
 
 
 
-# ============================
-# 查看白名单
-# ============================
 
 show_domain(){
 
-
-echo
-
 echo "========== 白名单 =========="
-
-
-if grep -v "^#" "$ALLOW" | grep -q .;then
-
 
 grep -v "^#" "$ALLOW"
 
 
-else
+echo
 
-
-echo "空"
-
-echo "当前模式: 不限制域名"
-
-
-fi
-
+echo "说明:"
+echo "为空表示不限"
 
 }
 
 
 
-# ============================
-# 重启服务
-# ============================
 
 restart(){
-
 
 systemctl restart emby-proxy
 
@@ -1011,150 +746,59 @@ systemctl restart caddy
 
 echo "重启完成"
 
-
 }
 
 
 
-# ============================
-# 状态
-# ============================
 
 status(){
 
-
-echo
-
-echo "====== Emby Proxy ======"
+echo "===== Emby Proxy ====="
 
 systemctl status emby-proxy --no-pager
 
 
 echo
 
-echo "====== Caddy ======"
+echo "===== Caddy ====="
 
 systemctl status caddy --no-pager
 
-
 }
 
 
 
-# ============================
-# 日志
-# ============================
 
 logs(){
 
-
-journalctl \
--u emby-proxy \
--n 100 \
---no-pager
-
+journalctl -u emby-proxy -n 100 --no-pager
 
 }
 
 
 
-# ============================
-# 查看版本
-# ============================
 
-version_info(){
-
-
-echo
-
-echo "=============================="
-
-echo "Emby Dynamic Proxy Manager"
-
-echo
-
-echo "脚本版本: $VERSION"
-
-echo "安装版本: $(get_version)"
-
-echo
-
-echo "Node:"
-
-node -v 2>/dev/null
-
-
-echo
-
-echo "Caddy:"
-
-caddy version 2>/dev/null
-
-
-echo "=============================="
-
-
-}
-
-
-
-# ============================
-# 卸载
-# ============================
-
-uninstall(){
-
-
-echo "开始卸载"
-
-
-
-systemctl stop emby-proxy 2>/dev/null
-
-systemctl disable emby-proxy 2>/dev/null
-
-
-
-rm -f "$SERVICE"
-
-
-rm -rf "$APP_DIR"
-
-
-
-systemctl daemon-reload
-
-
-
-echo "卸载完成"
-
-
-}
-
-
-
-# ============================
-# 菜单
-# ============================
 
 menu(){
 
-
 while true
-do
 
+do
 
 clear
 
 
-echo "================================="
-echo " Emby Dynamic Proxy Manager v$VERSION"
-echo " 当前安装版本: $(get_version)"
-echo "================================="
+echo "================================"
+
+echo " Emby Dynamic Proxy Manager v1.2"
+
+echo " Turbo Lite"
+
+echo "================================"
 
 echo
 
-echo "1. 安装 / 升级"
+echo "1. 安装 / 重装"
 
 echo "2. 添加白名单"
 
@@ -1170,10 +814,7 @@ echo "7. 查看日志"
 
 echo "8. 卸载"
 
-echo "9. 查看版本"
-
 echo "0. 退出"
-
 
 echo
 
@@ -1184,103 +825,38 @@ read -p "选择: " n
 
 case $n in
 
+1) install;;
 
-1)
+2) add_domain;;
 
-install
+3) del_domain;;
 
-;;
+4) show_domain;;
 
+5) restart;;
 
-2)
+6) status;;
 
-add_domain
+7) logs;;
 
-;;
+8) uninstall;;
 
+0) exit;;
 
-3)
-
-del_domain
-
-;;
-
-
-4)
-
-show_domain
-
-;;
-
-
-5)
-
-restart
-
-;;
-
-
-6)
-
-status
-
-;;
-
-
-7)
-
-logs
-
-;;
-
-
-8)
-
-uninstall
-
-;;
-
-
-9)
-
-version_info
-
-;;
-
-
-0)
-
-exit
-
-;;
-
-
-*)
-
-echo "错误"
-
-
-;;
+*) echo "错误";;
 
 esac
 
 
-
-echo
-
 read -p "回车继续..."
 
-
 done
-
 
 }
 
 
 
-# ============================
-# 启动
-# ============================
+
 
 check_root
 
