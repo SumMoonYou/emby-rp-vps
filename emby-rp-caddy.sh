@@ -293,7 +293,7 @@ res.writeHead(200,{
 
 
 res.end(
-`Emby Dynamic Proxy v5.5
+`Emby Dynamic Proxy v1.0
 
 代理运行正常
 
@@ -439,7 +439,7 @@ create_service(){
 
 cat >"$SERVICE"<<EOF
 [Unit]
-Description=Emby Dynamic Proxy v5.5
+Description=Emby Dynamic Proxy v1.0
 After=network.target
 
 [Service]
