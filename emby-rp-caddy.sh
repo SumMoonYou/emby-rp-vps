@@ -1,17 +1,18 @@
 #!/bin/bash
 # ============================================================
-# Emby Dynamic Proxy Manager v1.2 Turbo Lite
-# 动态 Emby 反代管理器
+# Emby Dynamic Proxy Manager v1.4
 #
-# 功能:
-# - IPv4 / IPv6
-# - HTTPS上游
+# Dynamic Emby Reverse Proxy
+#
+# 支持:
+# - HTTPS 443 自动证书
+# - HTTP 80模式
 # - WebSocket
-# - Range流媒体播放
-# - KeepAlive连接复用
+# - Range流媒体
+# - KeepAlive
 # - 白名单控制
-# - 白名单为空默认放行
-# - Caddy优化
+# - 空白名单默认放行
+# - Caddy反代优化
 #
 # 不修改系统TCP参数
 # ============================================================
@@ -20,7 +21,11 @@ APP_DIR="/opt/emby-proxy"
 SERVICE="/etc/systemd/system/emby-proxy.service"
 CADDY="/etc/caddy/Caddyfile"
 ALLOW="$APP_DIR/allow.list"
+
 PORT=8787
+DOMAIN=""
+LISTEN_PORT="443"
+
 
 
 check_root(){
@@ -31,14 +36,16 @@ exit 1
 }
 
 
+
 install_node(){
 
 command -v node >/dev/null && {
-echo "Node 已安装"
+echo "Node已安装"
 return
 }
 
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+
 apt update
 apt install -y nodejs
 
@@ -46,17 +53,24 @@ apt install -y nodejs
 
 
 
+
 install_caddy(){
 
 command -v caddy >/dev/null && {
-echo "Caddy 已安装"
+echo "Caddy已安装"
 return
 }
 
 
 apt update
 
-apt install -y curl gnupg debian-keyring debian-archive-keyring apt-transport-https
+apt install -y \
+curl \
+gnupg \
+debian-keyring \
+debian-archive-keyring \
+apt-transport-https
+
 
 
 curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
@@ -64,11 +78,14 @@ curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
 -o /usr/share/keyrings/caddy.gpg
 
 
+
 curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
 > /etc/apt/sources.list.d/caddy.list
 
 
+
 apt update
+
 apt install -y caddy
 
 }
@@ -83,7 +100,7 @@ mkdir -p "$APP_DIR"
 
 [ -f "$ALLOW" ] || cat >"$ALLOW"<<EOF
 # Emby白名单
-# 留空=允许所有域名
+# 留空=允许所有目标域名
 # 示例:
 # emby.example.com
 
@@ -102,17 +119,19 @@ const http=require("http");
 const https=require("https");
 const fs=require("fs");
 
+
 const PORT=8787;
 const ALLOW="/opt/emby-proxy/allow.list";
 
 
-// 连接复用
+
 const httpAgent=new http.Agent({
 keepAlive:true,
 maxSockets:1024,
 maxFreeSockets:256,
 timeout:60000
 });
+
 
 
 const httpsAgent=new https.Agent({
@@ -124,11 +143,12 @@ rejectUnauthorized:false
 });
 
 
+
 let allowCache=[];
 let allowTime=0;
 
 
-// 白名单缓存60秒
+
 function allowList(){
 
 let now=Date.now();
@@ -160,10 +180,11 @@ return [];
 
 
 
-// 白名单为空=不限
+
 function domainAllowed(host){
 
 let list=allowList();
+
 
 if(!list.length)
 return true;
@@ -188,12 +209,12 @@ return host===d||host.endsWith("."+d);
 
 
 
+
+
 function parseTarget(req){
 
-let u=new URL(
-req.url,
-"http://localhost"
-);
+
+let u=new URL(req.url,"http://localhost");
 
 
 let raw=u.pathname.substring(1);
@@ -203,17 +224,22 @@ if(
 !raw.startsWith("http://") &&
 !raw.startsWith("https://")
 )
+
 return null;
+
 
 
 let target=new URL(raw);
 
 
+
 if(!domainAllowed(target.hostname))
+
 return {
 deny:true,
 host:target.hostname
 };
+
 
 
 target.pathname=
@@ -229,12 +255,16 @@ target.search=u.search;
 return target;
 
 }
-
 function proxy(req,res,target){
 
-let client=target.protocol==="https:"?https:http;
 
-let agent=target.protocol==="https:"?httpsAgent:httpAgent;
+let client=
+target.protocol==="https:"?https:http;
+
+
+let agent=
+target.protocol==="https:"?httpsAgent:httpAgent;
+
 
 
 let headers={
@@ -245,13 +275,15 @@ host:target.host,
 };
 
 
-// 防止重复压缩
+
+// 禁止重复压缩
 delete headers["accept-encoding"];
 
 
-// 保留Range
+// 保留Range请求
 if(req.headers.range)
 headers.range=req.headers.range;
+
 
 
 let p=client.request({
@@ -297,6 +329,7 @@ r.pipe(res);
 
 p.on("error",e=>{
 
+
 res.writeHead(502);
 
 res.end(
@@ -304,12 +337,16 @@ res.end(
 e.message
 );
 
+
 });
 
 
 req.pipe(p);
 
+
 }
+
+
 
 
 
@@ -320,7 +357,9 @@ const server=http.createServer((req,res)=>{
 let target=parseTarget(req);
 
 
+
 if(!target){
+
 
 res.writeHead(200,{
 "Content-Type":
@@ -329,12 +368,13 @@ res.writeHead(200,{
 
 
 res.end(
-`Emby Dynamic Proxy v1.2 Turbo Lite
+`Emby Dynamic Proxy v1.4
 
-代理运行正常
+Proxy OK
 
-使用:
-http://${req.headers.host}/https://Emby地址
+Usage:
+
+https://${req.headers.host}/https://Emby地址
 
 `
 );
@@ -347,16 +387,20 @@ return;
 
 if(target.deny){
 
+
 res.writeHead(403);
+
 
 res.end(
 "403 Domain not allowed\n"+
 target.host
 );
 
+
 return;
 
 }
+
 
 
 proxy(req,res,target);
@@ -367,7 +411,11 @@ proxy(req,res,target);
 
 
 
-// WebSocket代理
+
+
+
+
+// WebSocket
 
 server.on("upgrade",(req,socket)=>{
 
@@ -375,9 +423,11 @@ server.on("upgrade",(req,socket)=>{
 let target=parseTarget(req);
 
 
+
 if(!target||target.deny){
 
 socket.destroy();
+
 return;
 
 }
@@ -390,13 +440,6 @@ target.protocol==="https:"?https:http;
 
 let agent=
 target.protocol==="https:"?httpsAgent:httpAgent;
-
-
-
-let headers={
-...req.headers,
-host:target.host
-};
 
 
 
@@ -416,7 +459,12 @@ path:
 target.pathname+
 target.search,
 
-headers,
+
+headers:{
+...req.headers,
+host:target.host
+},
+
 
 agent,
 
@@ -435,6 +483,7 @@ socket.write(
 "Upgrade: websocket\r\n"+
 "Connection: Upgrade\r\n\r\n"
 );
+
 
 
 proxySocket.pipe(socket);
@@ -460,6 +509,8 @@ p.end();
 
 
 
+
+
 server.timeout=0;
 
 server.keepAliveTimeout=65000;
@@ -470,7 +521,10 @@ server.maxConnections=2000;
 
 
 
-server.listen(PORT,"0.0.0.0",()=>{
+server.listen(
+PORT,
+"0.0.0.0",
+()=>{
 
 console.log(
 "Emby proxy running:"+PORT
@@ -485,7 +539,7 @@ create_service(){
 
 cat >"$SERVICE"<<EOF
 [Unit]
-Description=Emby Dynamic Proxy v1.2 Turbo Lite
+Description=Emby Dynamic Proxy Manager v1.4
 After=network.target
 
 [Service]
@@ -501,7 +555,9 @@ EOF
 
 
 systemctl daemon-reload
+
 systemctl enable emby-proxy
+
 systemctl restart emby-proxy
 
 }
@@ -509,19 +565,29 @@ systemctl restart emby-proxy
 
 
 
+
 create_caddy(){
+
 
 mkdir -p /etc/caddy
 
 
+
+if [ "$LISTEN_PORT" = "80" ]; then
+
+
 cat >"$CADDY"<<EOF
-:80 {
+http://$DOMAIN {
+
 
     reverse_proxy 127.0.0.1:$PORT {
 
+
         flush_interval -1
 
+
         transport http {
+
 
             dial_timeout 5s
 
@@ -535,44 +601,100 @@ cat >"$CADDY"<<EOF
 
             write_buffer 65536
 
+
         }
 
+
     }
+
 
 }
 EOF
 
 
 
+else
+
+
+cat >"$CADDY"<<EOF
+$DOMAIN {
+
+
+    reverse_proxy 127.0.0.1:$PORT {
+
+
+        flush_interval -1
+
+
+        transport http {
+
+
+            dial_timeout 5s
+
+            response_header_timeout 60s
+
+            keepalive 60s
+
+            keepalive_idle_conns 256
+
+            read_buffer 65536
+
+            write_buffer 65536
+
+
+        }
+
+
+    }
+
+
+}
+EOF
+
+
+fi
+
+
+
+
 caddy fmt --overwrite "$CADDY"
 
 
+
 caddy validate --config "$CADDY" || {
+
 
 echo "Caddy配置错误"
 
 return 1
 
+
 }
+
 
 
 systemctl restart caddy
 
+
 }
+
 
 
 
 
 clean_old(){
 
+
 systemctl stop emby-proxy 2>/dev/null
 
 systemctl disable emby-proxy 2>/dev/null
 
 
+
 rm -f "$SERVICE"
 
 rm -rf "$APP_DIR"
+
 
 
 systemctl daemon-reload
@@ -582,17 +704,65 @@ systemctl daemon-reload
 
 
 
+
 install(){
 
-echo "开始安装 Emby Dynamic Proxy v1.2 Turbo Lite"
+
+echo "================================"
+
+echo " Emby Dynamic Proxy Manager v1.4"
+
+echo "================================"
+
+
+echo
+
+
+read -p "请输入Emby反代域名: " DOMAIN
+
+
+
+[ -z "$DOMAIN" ] && {
+
+
+echo "域名不能为空"
+
+return
+
+
+}
+
+
+
+read -p "请输入公网访问端口(默认443): " LISTEN_PORT
+
+
+
+[ -z "$LISTEN_PORT" ] && LISTEN_PORT=443
+
+
+
+if [ "$LISTEN_PORT" != "80" ] && [ "$LISTEN_PORT" != "443" ]; then
+
+
+echo "仅支持80或443"
+
+return
+
+
+fi
+
+
 
 
 [ -f "$SERVICE" ] && clean_old
 
 
+
 install_node
 
 install_caddy
+
 
 
 init_dir
@@ -607,28 +777,54 @@ if create_caddy
 
 then
 
+
+
 echo
-echo "=========================="
+
+echo "=============================="
+
 echo "安装完成"
-echo "=========================="
-echo
 
-echo "白名单文件:"
-echo "$ALLOW"
+echo "=============================="
+
 
 echo
 
-echo "规则:"
-echo "白名单为空=允许全部Emby地址"
+
+if [ "$LISTEN_PORT" = "443" ]; then
+
+
+echo "访问地址:"
+echo "https://$DOMAIN"
 
 
 else
+
+
+echo "访问地址:"
+echo "http://$DOMAIN"
+
+
+fi
+
+
+echo
+
+echo "白名单:"
+echo "$ALLOW"
+
+
+
+else
+
 
 echo "安装失败"
 
 clean_old
 
+
 fi
+
 
 }
 
@@ -636,9 +832,12 @@ fi
 
 
 
+
 uninstall(){
 
+
 echo "卸载中..."
+
 
 
 systemctl stop emby-proxy 2>/dev/null
@@ -646,12 +845,15 @@ systemctl stop emby-proxy 2>/dev/null
 systemctl disable emby-proxy 2>/dev/null
 
 
+
 rm -f "$SERVICE"
 
 rm -rf "$APP_DIR"
 
 
+
 systemctl daemon-reload
+
 
 
 rm -f "$CADDY"
@@ -659,10 +861,13 @@ rm -f "$CADDY"
 touch "$CADDY"
 
 
+
 systemctl restart caddy
 
 
+
 echo "卸载完成"
+
 
 }
 add_domain(){
@@ -676,22 +881,29 @@ read -p "输入根域名: " d
 [ -z "$d" ] && return
 
 
+
 d=$(echo "$d" | sed 's#https\?://##;s#/.*##')
+
 
 
 grep -qx "$d" "$ALLOW" && {
 
+
 echo "已经存在"
+
 
 return
 
 }
 
 
+
 echo "$d" >> "$ALLOW"
 
 
+
 echo "添加成功: $d"
+
 
 }
 
@@ -700,80 +912,114 @@ echo "添加成功: $d"
 
 del_domain(){
 
+
 echo "当前白名单:"
+
 
 grep -v "^#" "$ALLOW"
 
+
+
 echo
+
 
 
 read -p "删除域名: " d
 
 
+
 sed -i "/^$d$/d" "$ALLOW"
+
 
 
 echo "删除完成"
 
+
 }
+
+
 
 
 
 
 show_domain(){
 
+
 echo "========== 白名单 =========="
+
 
 grep -v "^#" "$ALLOW"
 
 
+
 echo
 
+
+
 echo "说明:"
-echo "为空表示不限"
+echo "为空表示允许所有目标域名"
+
 
 }
+
+
 
 
 
 
 restart(){
 
+
 systemctl restart emby-proxy
 
 systemctl restart caddy
 
 
+
 echo "重启完成"
 
+
 }
+
 
 
 
 
 status(){
 
-echo "===== Emby Proxy ====="
+
+echo "====== Emby Proxy ======"
+
 
 systemctl status emby-proxy --no-pager
 
 
+
 echo
 
-echo "===== Caddy ====="
+
+
+echo "====== Caddy ======"
+
 
 systemctl status caddy --no-pager
 
+
 }
+
+
 
 
 
 
 logs(){
 
+
 journalctl -u emby-proxy -n 100 --no-pager
 
+
 }
+
 
 
 
@@ -781,22 +1027,24 @@ journalctl -u emby-proxy -n 100 --no-pager
 
 menu(){
 
+
 while true
 
 do
 
+
 clear
 
 
-echo "================================"
 
-echo " Emby Dynamic Proxy Manager v1.2"
+echo "===================================="
 
-echo " Turbo Lite"
+echo " Emby Dynamic Proxy Manager v1.4"
 
-echo "================================"
+echo "===================================="
 
 echo
+
 
 echo "1. 安装 / 重装"
 
@@ -816,41 +1064,107 @@ echo "8. 卸载"
 
 echo "0. 退出"
 
+
+
 echo
+
 
 
 read -p "选择: " n
 
 
 
+
 case $n in
 
-1) install;;
 
-2) add_domain;;
+1)
 
-3) del_domain;;
+install
 
-4) show_domain;;
+;;
 
-5) restart;;
 
-6) status;;
 
-7) logs;;
+2)
 
-8) uninstall;;
+add_domain
 
-0) exit;;
+;;
 
-*) echo "错误";;
+
+
+3)
+
+del_domain
+
+;;
+
+
+
+4)
+
+show_domain
+
+;;
+
+
+
+5)
+
+restart
+
+;;
+
+
+
+6)
+
+status
+
+;;
+
+
+
+7)
+
+logs
+
+;;
+
+
+
+8)
+
+uninstall
+
+;;
+
+
+
+0)
+
+exit
+
+;;
+
+
+
+*)
+
+echo "错误"
+
+;;
+
 
 esac
+
 
 
 read -p "回车继续..."
 
 done
+
 
 }
 
