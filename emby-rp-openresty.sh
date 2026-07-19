@@ -229,7 +229,7 @@ install(){
     green " 🎉 反代服务部署成功！"
     green "=================================================="
     echo " ℹ️  访问格式: http://$DOMAIN/目标地址"
-    echo " 💡 示例: http://$DOMAIN/cdn.zhezhi.art"
+    echo " 💡 示例: http://$DOMAIN/https://emby.com"
     pause
 }
 
