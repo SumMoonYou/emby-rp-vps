@@ -2,10 +2,10 @@
 
 # ==================================================
 # 动态反代极速部署工具 (Emby/CDN 专用)
-# Version: v3.5 Lua (Simplified Edition)
+# Version: v3.6 Lua (Clean Example Edition)
 # ==================================================
 
-VER="v3.5"
+VER="v3.6"
 CONF="/etc/emby-rp.conf"
 NGINX="/usr/local/openresty/nginx/conf/nginx.conf"
 LUA="/usr/local/openresty/nginx/conf/lua_init.lua"
@@ -111,7 +111,7 @@ http {
                 if target == "" then
                     ngx.status = 400
                     ngx.header.content_type="text/plain; charset=utf-8"
-                    ngx.say("❌ 400 缺少目标地址\n\n[正确格式]: http://" .. ngx.var.host .. "/目标域名\n[示例]: http://" .. ngx.var.host .. "/cdn.zhezhi.art\n")
+                    ngx.say("❌ 400 缺少目标地址\n\n[正确格式]: http://" .. ngx.var.host .. "/目标域名\n[示例]: http://" .. ngx.var.host .. "/example.com\n")
                     return ngx.exit(400)
                 end
 
@@ -229,7 +229,7 @@ install(){
     green " 🎉 反代服务部署成功！"
     green "=================================================="
     echo " ℹ️  访问格式: http://$DOMAIN/目标地址"
-    echo " 💡 示例: http://$DOMAIN/https://emby.com"
+    echo " 💡 示例: http://$DOMAIN/example.com"
     pause
 }
 
@@ -268,7 +268,7 @@ white(){
             2) FILTER="0" ;;
             3)
                 echo
-                read -p " ➕ 输入放行域名: " ADD
+                read -p " ➕ 输入放行域名 (例如 example.com): " ADD
                 if [ -n "$ADD" ];then
                     if [ -z "$ALLOW_DOMAIN" ];then
                         ALLOW_DOMAIN="$ADD"
