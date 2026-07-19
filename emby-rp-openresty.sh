@@ -1,28 +1,19 @@
 #!/bin/bash
 
 # ==================================================
-# Emby Reverse Proxy Manager
-# Version: v3.3 Lua (Streaming Fixed)
-#
-# OpenResty + Lua 动态反代（流媒体完美修复版）
+# 动态反代极速部署工具 (Emby/CDN 专用)
+# Version: v3.5 Lua (Simplified Edition)
 # ==================================================
 
-VER="v3.3"
+VER="v3.5"
 CONF="/etc/emby-rp.conf"
 NGINX="/usr/local/openresty/nginx/conf/nginx.conf"
 LUA="/usr/local/openresty/nginx/conf/lua_init.lua"
 
-green(){
-    echo -e "\033[32m$1\033[0m"
-}
-
-red(){
-    echo -e "\033[31m$1\033[0m"
-}
-
-pause(){
-    read -p "回车继续..."
-}
+green(){ echo -e "\033[32m$1\033[0m"; }
+red(){ echo -e "\033[31m$1\033[0m"; }
+yellow(){ echo -e "\033[33m$1\033[0m"; }
+pause(){ echo; read -p " 💡 按 [回车键] 返回主菜单..."; }
 
 init(){
     [ -f "$CONF" ] || cat > "$CONF" <<EOF
@@ -43,33 +34,21 @@ EOF
 
 header(){
     clear
-    echo "================================"
-    echo " Emby Reverse Proxy Manager"
-    echo " Version: $VER"
-    echo "================================"
+    echo "=================================================="
+    echo "         🚀 动态反代服务管理面板 v$VER"
+    echo "=================================================="
     echo
 }
 
-# ==================================================
-# 安装依赖
-# ==================================================
 install_pkg(){
+    echo "ℹ️  正在准备系统环境..."
     apt update >/dev/null 2>&1
-    apt install -y \
-    curl \
-    wget \
-    socat \
-    gnupg2 \
-    ca-certificates \
-    software-properties-common \
-    lsb-release >/dev/null 2>&1
+    apt install -y curl wget socat gnupg2 ca-certificates software-properties-common lsb-release >/dev/null 2>&1
 }
 
-# ==================================================
-# 安装OpenResty
-# ==================================================
 install_openresty(){
     command -v openresty >/dev/null && return 0
+    echo "ℹ️  正在安装 OpenResty..."
     rm -f /etc/apt/sources.list.d/openresty.list
     wget -qO- https://openresty.org/package/pubkey.gpg | apt-key add -
     echo "deb http://openresty.org/package/debian $(lsb_release -sc) openresty" \
@@ -78,7 +57,7 @@ install_openresty(){
     apt install -y openresty
 
     if ! command -v openresty >/dev/null;then
-        red "OpenResty安装失败"
+        red "❌ 错误: OpenResty 安装失败！"
         return 1
     fi
 
@@ -86,9 +65,6 @@ install_openresty(){
     return 0
 }
 
-# ==================================================
-# 写入Lua配置
-# ==================================================
 write_lua(){
     mkdir -p "$(dirname "$LUA")"
     cat > "$LUA" <<EOF
@@ -98,9 +74,6 @@ dict:set("domains", "$ALLOW_DOMAIN")
 EOF
 }
 
-# ==================================================
-# 生成OpenResty Lua反代配置
-# ==================================================
 make_nginx(){
     write_lua
 
@@ -119,14 +92,12 @@ http {
     lua_shared_dict allow_domain 10m;
     init_by_lua_file $LUA;
 
-    # 保持您指定的国外通用 DNS
     resolver 1.1.1.1 8.8.8.8 208.67.222.222 valid=300s ipv6=off;
 
     server {
         listen 80;
         server_name $DOMAIN;
 
-        # 提前定义 Nginx 变量，供 Lua 动态写入
         set \$upstream "";
         set \$target_host "";
         set \$target_scheme "";
@@ -134,15 +105,13 @@ http {
         location / {
             rewrite_by_lua_block {
                 local uri = ngx.var.request_uri
-                
-                -- 【核心修复 1】剥离 ? 后面的流媒体播放参数，防止参数污染重写路径导致无法播放
                 local pure_uri = uri:match("^([^?]+)") or uri
                 local target = pure_uri:sub(2)
 
                 if target == "" then
                     ngx.status = 400
                     ngx.header.content_type="text/plain; charset=utf-8"
-                    ngx.say("❌ 400 请求错误\n\n原因:\n没有输入目标地址\n\n正确格式:\nhttp://你的域名/目标地址\n")
+                    ngx.say("❌ 400 缺少目标地址\n\n[正确格式]: http://" .. ngx.var.host .. "/目标域名\n[示例]: http://" .. ngx.var.host .. "/cdn.zhezhi.art\n")
                     return ngx.exit(400)
                 end
 
@@ -151,7 +120,6 @@ http {
                     url="https://"..url
                 end
 
-                -- 白名单检测
                 local dict = ngx.shared.allow_domain
                 if dict:get("filter")=="1" then
                     local host = url:match("^https?://([^/]+)")
@@ -165,19 +133,17 @@ http {
                     if not allow then
                         ngx.status=403
                         ngx.header.content_type="text/plain; charset=utf-8"
-                        ngx.say("❌ 403 禁止访问\n\n原因:\n目标域名不在白名单\n")
+                        ngx.say("⚠️ 403 目标域名不在白名单内\n")
                         return ngx.exit(403)
                     end
                 end
 
-                -- 【核心修复 2】准确拆分出纯净域名与路径，只用 path 参与重写，让 Nginx 自动追加原始 Query 参数
                 local scheme, host, path = url:match("^(https?://)([^/]+)(.*)")
                 if not path or path == "" then
                     path = "/"
                 end
                 ngx.req.set_uri(path)
 
-                -- 将提取出来的正确值赋给 Nginx 变量
                 ngx.var.target_scheme = scheme:gsub("://", "")
                 ngx.var.target_host = host
                 ngx.var.upstream = scheme .. host
@@ -185,12 +151,9 @@ http {
 
             proxy_pass \$upstream;
 
-            # 【核心修复 3】将 Host 修改为真实的 Emby 目标域名，防止 502 拒绝连接
             proxy_set_header Host \$target_host;
             proxy_set_header X-Real-IP \$remote_addr;
             proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-            
-            # 告诉 Emby 真实的传输协议，防止其发送错误的媒体播放清单路径
             proxy_set_header X-Forwarded-Proto \$target_scheme;
 
             proxy_ssl_server_name on;
@@ -198,11 +161,9 @@ http {
             proxy_intercept_errors on;
             proxy_http_version 1.1;
 
-            # 完美放行 WebSocket 协议，保障 Emby 客户端控制台与握手连接
             proxy_set_header Upgrade \$http_upgrade;
             proxy_set_header Connection "upgrade";
 
-            # 流媒体流式大文件传输必备优化选项
             proxy_buffering off;
             proxy_request_buffering off;
             proxy_read_timeout 43200s;
@@ -214,112 +175,111 @@ http {
 
         location @err502 {
             default_type text/plain;
-            return 502 "❌ 502 代理失败\n\n原因:\n目标服务器拒绝连接，或动态路径解析错误。\n";
+            return 502 "❌ 502 代理失败\n\n[排查提示]:\n1. 请检查目标源站是否可以正常访问。\n2. 源站可能封禁了此服务器 IP。\n3. DNS 解析超时，请刷新重试。\n";
         }
 
         location @err504 {
             default_type text/plain;
-            return 504 "❌ 504 请求超时\n";
+            return 504 "❌ 504 请求超时\n\n[提示]: 目标源站响应超时。\n";
         }
     }
 }
 EOF
 
-    openresty -t
+    openresty -t >/dev/null 2>&1
     if [ $? != 0 ];then
-        red "Nginx配置检测失败"
+        red "❌ 错误: Nginx 配置校验失败！"
         return 1
     fi
 
     systemctl restart openresty
-    green "Lua反代配置完成"
+    green "✅ 成功: 配置已重构并应用！"
 }
 
-# ==================================================
-# 安装反代
-# ==================================================
 install(){
     header
     install_pkg
     install_openresty
 
     if [ $? != 0 ];then
-        red "OpenResty安装失败"
         pause
         return
     fi
 
-    read -p "代理域名:" DOMAIN
+    echo "⚡ 请输入绑定的代理域名："
+    read -p " 👉 域名: " DOMAIN
+    if [ -z "$DOMAIN" ];then
+        red "❌ 错误: 域名不能为空！"
+        pause
+        return
+    fi
+    
     FILTER="0"
     ALLOW_DOMAIN=""
     save
 
     make_nginx
     if [ $? != 0 ];then
-        red "配置失败"
+        red "❌ 错误: 初始化失败！"
         pause
         return
     fi
 
-    green "安装完成"
-    echo
-    echo "访问格式:"
-    echo "http://$DOMAIN/目标地址"
-    echo
-    echo "示例:"
-    echo "http://$DOMAIN/cdn.zhezhi.art"
-    echo "或者:"
-    echo "http://$DOMAIN/https://cdn.zhezhi.art"
+    green "=================================================="
+    green " 🎉 反代服务部署成功！"
+    green "=================================================="
+    echo " ℹ️  访问格式: http://$DOMAIN/目标地址"
+    echo " 💡 示例: http://$DOMAIN/cdn.zhezhi.art"
     pause
 }
 
-# ==================================================
-# 白名单管理
-# ==================================================
 white(){
     while true
     do
         header
-        echo "白名单管理"
-        echo
-        echo "当前状态:"
+        echo "🛡️  白名单管理"
+        echo "--------------------------------------------------"
+        echo -n " 🔒 状态: "
         if [ "$FILTER" = "1" ];then
-            echo "开启"
+            green "已开启 (仅放行列表内域名)"
         else
-            echo "关闭"
+            yellow "已关闭 (允许代理任何网站)"
         fi
 
-        echo
-        echo "当前域名:"
+        echo " 📋 列表:"
         if [ -z "$ALLOW_DOMAIN" ];then
-            echo "暂无"
+            echo "    (暂无域名)"
         else
-            echo "$ALLOW_DOMAIN" | tr "|" "\n"
+            echo "$ALLOW_DOMAIN" | tr "|" "\n" | sed 's/^/    🔹 /'
         fi
-
+        echo "--------------------------------------------------"
+        echo "  [1] 开启白名单"
+        echo "  [2] 关闭白名单"
+        echo "  [3] 添加域名"
+        echo "  [4] 删除域名"
+        echo "  [5] 清空列表"
+        echo "  [0] 保存并返回"
+        echo "--------------------------------------------------"
         echo
-        echo "1.开启"
-        echo "2.关闭"
-        echo "3.添加域名"
-        echo "4.删除域名"
-        echo "5.清空"
-        echo "0.返回"
-        echo
 
-        read -p "选择:" W
+        read -p " 👉 请选择 [0-5]: " W
         case $W in
             1) FILTER="1" ;;
             2) FILTER="0" ;;
             3)
-                read -p "输入域名:" ADD
-                if [ -z "$ALLOW_DOMAIN" ];then
-                    ALLOW_DOMAIN="$ADD"
-                else
-                    ALLOW_DOMAIN="$ALLOW_DOMAIN|$ADD"
+                echo
+                read -p " ➕ 输入放行域名: " ADD
+                if [ -n "$ADD" ];then
+                    if [ -z "$ALLOW_DOMAIN" ];then
+                        ALLOW_DOMAIN="$ADD"
+                    else
+                        ALLOW_DOMAIN="$ALLOW_DOMAIN|$ADD"
+                    fi
                 fi
             ;;
             4)
-                read -p "删除域名:" DEL
+                echo
+                read -p " ➖ 输入删除域名: " DEL
                 NEW=""
                 IFS="|" read -ra ARR <<< "$ALLOW_DOMAIN"
                 for d in "${ARR[@]}"
@@ -335,84 +295,88 @@ white(){
                 ALLOW_DOMAIN="$NEW"
             ;;
             5) ALLOW_DOMAIN="" ;;
-            0) return ;;
-            *) red "错误" ;;
+            0) 
+                save
+                make_nginx
+                return 
+            ;;
+            *) red "❌ 输入错误！" ;;
         esac
-
         save
         make_nginx
         pause
     done
 }
 
-# ==================================================
-# 查看配置
-# ==================================================
 show(){
     header
-    cat "$CONF"
+    echo "🔍 当前配置参数:"
+    echo "--------------------------------------------------"
+    echo " 🌐 代理域名: $DOMAIN"
+    echo -n " 🛡️ 白名单状态: "
+    [ "$FILTER" = "1" ] && green "已开启" || yellow "已关闭"
+    echo " 📝 允许的域名: ${ALLOW_DOMAIN:-未设置}"
+    echo "--------------------------------------------------"
     pause
 }
 
-# ==================================================
-# 重载
-# ==================================================
 reload(){
-    openresty -t
+    header
+    openresty -t >/dev/null 2>&1
     if [ $? = 0 ];then
         systemctl reload openresty
-        green "重载成功"
+        green "✅ 成功: 服务已重载！"
     else
-        red "配置错误"
+        red "❌ 错误: Nginx 配置存在致命错误！"
     fi
     pause
 }
 
-# ==================================================
-# 卸载
-# ==================================================
 remove(){
-    systemctl stop openresty 2>/dev/null
-    apt remove --purge -y openresty* 2>/dev/null
-    rm -rf /usr/local/openresty
-    rm -rf "$CONF"
-    green "卸载完成"
+    header
+    red "⚠️  警告：该操作将清除所有反代服务与配置！"
+    read -p " 🤔 确定卸载吗？(确认输入 y, 取消按回车): " CONFIRM
+    if [ "$CONFIRM" = "y" ] || [ "$CONFIRM" = "Y" ];then
+        systemctl stop openresty 2>/dev/null
+        apt remove --purge -y openresty* 2>/dev/null
+        rm -rf /usr/local/openresty rm -rf "$CONF"
+        green "✅ 成功: 已卸载完毕！"
+    else
+        yellow "ℹ️  操作已取消。"
+    fi
     pause
 }
 
-# ==================================================
-# 菜单
-# ==================================================
 menu(){
     while true
     do
         header
-        echo "1.安装反代"
-        echo "2.白名单管理"
-        echo "3.查看配置"
-        echo "4.重载OpenResty"
-        echo "5.卸载"
-        echo "0.退出"
+        echo "请选择操作:"
+        echo "--------------------------------------------------"
+        echo "  [1] 安装 / 初始化反代"
+        echo "  [2] 白名单管理"
+        echo "  [3] 查看当前配置"
+        echo "  [4] 重载服务 / 刷新缓存"
+        echo "  [5] 卸载反代系统"
+        echo "  [0] 退出脚本"
+        echo "--------------------------------------------------"
         echo
 
-        read -p "选择:" M
+        read -p " 👉 请输入选项 [0-5]: " M
         case $M in
             1) install ;;
             2) white ;;
             3) show ;;
             4) reload ;;
             5) remove ;;
-            0) exit 0 ;;
-            *) red "错误" ;;
+            0) clear; exit 0 ;;
+            *) red "❌ 提示: 输入无效！"; sleep 1 ;;
         esac
     done
 }
 
-# ==================================================
-# 启动
-# ==================================================
 if [ "$(id -u)" != "0" ];then
-    red "请使用root运行"
+    echo -e "\033[31m❌ 错误: 必须使用 root 用户运行！\033[0m"
     exit 1
 fi
 
