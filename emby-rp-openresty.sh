@@ -2,25 +2,22 @@
 
 # ==================================================
 # Emby Reverse Proxy Manager
-# Version: v2.0
+# Version: v2.1
 #
 # 更新:
-# 1. 支持 /域名 自动HTTPS
-# 2. 支持 /http:// /https://
-# 3. 支持端口自动判断
-# 4. 白名单多域名管理
+# - 删除443/证书
+# - HTTP入口固定
+# - 目标地址自动HTTPS
+# - 支持http:// https://
+# - 支持端口判断
+# - 白名单多域名管理
 # ==================================================
 
-VER="v2.0"
+VER="v2.1"
 
 CONF="/etc/emby-rp.conf"
 NGINX="/usr/local/openresty/nginx/conf/nginx.conf"
-SSL="/etc/openresty/ssl"
 
-
-# ==============================
-# 统一提示
-# ==============================
 
 green(){
 echo -e "\033[32m$1\033[0m"
@@ -36,59 +33,10 @@ echo -e "\033[33m$1\033[0m"
 
 
 pause(){
-
 read -p "回车继续..."
-
 }
 
 
-
-# ==============================
-# 初始化
-# ==============================
-
-init(){
-
-
-[ -f "$CONF" ] || cat > "$CONF" <<EOF
-DOMAIN=""
-PORT="80"
-EMAIL=""
-FILTER="0"
-ALLOW_DOMAIN=""
-EOF
-
-
-source "$CONF"
-
-
-}
-
-
-
-# ==============================
-# 保存配置
-# ==============================
-
-save(){
-
-
-cat > "$CONF" <<EOF
-DOMAIN="$DOMAIN"
-PORT="$PORT"
-EMAIL="$EMAIL"
-FILTER="$FILTER"
-ALLOW_DOMAIN="$ALLOW_DOMAIN"
-EOF
-
-
-}
-
-
-
-# ==============================
-# 标题
-# ==============================
 
 header(){
 
@@ -98,31 +46,59 @@ echo "================================"
 echo " Emby Reverse Proxy Manager"
 echo " Version: $VER"
 echo "================================"
-
 echo
 
 }
 
 
 
-# ==============================
-# 安装依赖
-# ==============================
+init(){
 
-install_pkg(){
+[ -f "$CONF" ] || cat > "$CONF" <<EOF
+DOMAIN=""
+FILTER="0"
+ALLOW_DOMAIN=""
+EOF
 
-apt update >/dev/null 2>&1
 
-apt install -y curl wget socat >/dev/null 2>&1
+source "$CONF"
 
 }
 
 
 
-# ==============================
-# OpenResty安装
-# 保留原版逻辑
-# ==============================
+save(){
+
+cat > "$CONF" <<EOF
+DOMAIN="$DOMAIN"
+FILTER="$FILTER"
+ALLOW_DOMAIN="$ALLOW_DOMAIN"
+EOF
+
+}
+
+
+
+install_pkg(){
+
+apt update >/dev/null 2>&1
+
+
+apt install -y \
+curl \
+wget \
+socat \
+software-properties-common \
+lsb-release >/dev/null 2>&1
+
+
+}
+
+
+
+# ==================================================
+# 保留原OpenResty安装方式
+# ==================================================
 
 install_openresty(){
 
@@ -150,15 +126,11 @@ systemctl enable openresty
 
 
 
-# ==============================
+# ==================================================
 # 生成Nginx配置
-# ==============================
+# ==================================================
 
 make_nginx(){
-
-
-mkdir -p "$SSL"
-
 
 
 cat > "$NGINX" <<EOF
@@ -171,7 +143,6 @@ events {
 worker_connections 4096;
 
 }
-
 
 
 http {
@@ -194,8 +165,7 @@ resolver 223.5.5.5 119.29.29.29 1.1.1.1 valid=300s ipv6=off;
 server {
 
 
-
-listen $PORT;
+listen 80;
 
 
 server_name $DOMAIN;
@@ -206,7 +176,7 @@ location / {
 
 
 
-# 默认HTTPS
+# 默认目标协议
 
 set \$backend_scheme "https";
 
@@ -217,11 +187,8 @@ set \$backend_uri "/";
 
 
 # ==============================
-# 完整地址
-# /https://example.com
-# /http://example.com
+# 带协议
 # ==============================
-
 
 if (\$request_uri ~ "^/(https?)://([^/]+)(.*)") {
 
@@ -238,8 +205,7 @@ set \$backend_uri \$3;
 
 
 # ==============================
-# 简写地址
-# /example.com
+# 不带协议
 # 自动HTTPS
 # ==============================
 
@@ -257,16 +223,16 @@ set \$backend_uri \$2;
 
 }
 
+
 }
 
 
 
-# 默认路径
-
-
 if (\$backend_uri = "") {
 
+
 set \$backend_uri "/";
+
 
 }
 
@@ -303,28 +269,26 @@ set \$backend_scheme "http";
 
 if (\$backend_host = "") {
 
-return 400 "目标地址错误";
+return 400 "目标地址为空";
 
 }
 
 
 EOF
-# ==============================
-# 白名单限制
-# ==============================
+# ==================================================
+# 白名单
+# ==================================================
 
 if [ "$FILTER" = "1" ] && [ -n "$ALLOW_DOMAIN" ];then
 
 
 cat >> "$NGINX" <<EOF
 
-
 if (\$backend_host !~ "(^|\\.)($ALLOW_DOMAIN)\$") {
 
 return 403 "目标域名禁止代理";
 
 }
-
 
 EOF
 
@@ -333,14 +297,16 @@ fi
 
 
 
-# ==============================
-# 代理参数
-# ==============================
-
 cat >> "$NGINX" <<'EOF'
 
 
+# ==============================
+# 反向代理
+# ==============================
+
+
 proxy_pass $backend_scheme://$backend_host$backend_uri;
+
 
 
 proxy_ssl_server_name on;
@@ -356,6 +322,7 @@ proxy_set_header Host $backend_host;
 proxy_set_header X-Real-IP $remote_addr;
 
 
+
 proxy_http_version 1.1;
 
 
@@ -365,7 +332,7 @@ proxy_set_header Connection "upgrade";
 
 
 
-# Emby流媒体支持
+# Emby流媒体
 
 proxy_set_header Range $http_range;
 
@@ -408,87 +375,9 @@ green "OpenResty配置完成"
 
 
 
-# ==============================
-# 证书
-# ==============================
-
-cert(){
-
-
-[ "$PORT" != "443" ] && {
-
-green "80端口跳过证书"
-
-return
-
-}
-
-
-
-[ -z "$EMAIL" ] && read -p "证书邮箱:" EMAIL
-
-
-
-curl https://get.acme.sh | sh -s email="$EMAIL"
-
-
-
-~/.acme.sh/acme.sh \
---set-default-ca \
---server letsencrypt
-
-
-
-systemctl stop openresty
-
-
-
-~/.acme.sh/acme.sh \
---issue \
--d "$DOMAIN" \
---standalone
-
-
-
-if [ $? != 0 ];then
-
-
-red "证书申请失败"
-
-
-systemctl start openresty
-
-
-return
-
-
-fi
-
-
-
-mkdir -p "$SSL"
-
-
-
-~/.acme.sh/acme.sh \
---install-cert \
--d "$DOMAIN" \
---key-file "$SSL/key.pem" \
---fullchain-file "$SSL/fullchain.pem"
-
-
-
-green "证书安装完成"
-
-
-
-}
-
-
-
-# ==============================
+# ==================================================
 # 安装
-# ==============================
+# ==================================================
 
 install(){
 
@@ -507,51 +396,19 @@ read -p "代理域名:" DOMAIN
 
 
 
-echo
+if [ -z "$DOMAIN" ];then
 
+red "域名不能为空"
 
-echo "端口:"
+pause
 
-echo "1) 80"
-
-echo "2) 443"
-
-
-
-read -p "选择:" P
-
-
-
-case $P in
-
-
-2)
-
-PORT=443
-
-;;
-
-
-*)
-
-PORT=80
-
-;;
-
-esac
-
-
-
-if [ "$PORT" = "443" ];then
-
-cert
+return
 
 fi
 
 
 
-FILTER=0
-
+FILTER="0"
 
 ALLOW_DOMAIN=""
 
@@ -566,22 +423,16 @@ make_nginx
 green "安装完成"
 
 
-
 echo
-
 
 echo "访问方式:"
 
-
 echo
-
 
 echo "完整:"
 echo "http://$DOMAIN/https://目标地址"
 
-
 echo
-
 
 echo "简写:"
 echo "http://$DOMAIN/目标地址"
@@ -595,9 +446,9 @@ pause
 
 
 
-# ==============================
+# ==================================================
 # 白名单管理
-# ==============================
+# ==================================================
 
 white(){
 
@@ -610,11 +461,12 @@ do
 header
 
 
-echo "访问控制管理"
+echo "白名单管理"
 
 echo
 
-echo "状态:"
+
+echo "当前状态:"
 
 
 if [ "$FILTER" = "1" ];then
@@ -631,8 +483,7 @@ fi
 
 echo
 
-
-echo "当前白名单:"
+echo "当前域名:"
 
 
 if [ -z "$ALLOW_DOMAIN" ];then
@@ -649,18 +500,17 @@ fi
 
 echo
 
-echo "1. 开启白名单"
+echo "1. 开启"
 
-echo "2. 关闭白名单"
+echo "2. 关闭"
 
 echo "3. 添加域名"
 
 echo "4. 删除域名"
 
-echo "5. 清空白名单"
+echo "5. 清空"
 
 echo "0. 返回"
-
 
 
 echo
@@ -673,6 +523,7 @@ read -p "选择:" W
 case $W in
 
 
+
 1)
 
 FILTER=1
@@ -681,9 +532,10 @@ save
 
 make_nginx
 
-green "白名单开启"
+green "开启成功"
 
 ;;
+
 
 
 2)
@@ -694,15 +546,15 @@ save
 
 make_nginx
 
-yellow "白名单关闭"
+yellow "关闭成功"
 
 ;;
 
 
+
 3)
 
-read -p "添加域名:" ADD
-
+read -p "输入域名:" ADD
 
 
 ADD=$(echo "$ADD" | tr 'A-Z' 'a-z')
@@ -730,6 +582,9 @@ green "添加成功"
 
 
 ;;
+
+
+
 4)
 
 read -p "删除域名:" DEL
@@ -741,8 +596,10 @@ NEW=""
 IFS="|" read -ra ARR <<< "$ALLOW_DOMAIN"
 
 
+
 for i in "${ARR[@]}"
 do
+
 
 if [ "$i" != "$DEL" ] && [ -n "$i" ];then
 
@@ -768,11 +625,9 @@ done
 ALLOW_DOMAIN="$NEW"
 
 
-
 save
 
 make_nginx
-
 
 
 green "删除成功"
@@ -783,7 +638,6 @@ green "删除成功"
 
 5)
 
-
 ALLOW_DOMAIN=""
 
 
@@ -792,9 +646,7 @@ save
 make_nginx
 
 
-
-yellow "白名单已清空"
-
+yellow "已清空"
 
 
 ;;
@@ -809,13 +661,11 @@ return
 
 *)
 
-red "错误选择"
+red "错误"
 
 ;;
 
-
 esac
-
 
 
 pause
@@ -825,43 +675,50 @@ done
 
 
 }
-
-
-
-# ==============================
+# ==================================================
 # 查看配置
-# ==============================
+# ==================================================
 
 show(){
 
-
 header
 
+echo "========== 当前配置 =========="
 
 cat "$CONF"
 
 
-
 pause
-
 
 }
 
 
 
-# ==============================
-# 重载
-# ==============================
+# ==================================================
+# 重载服务
+# ==================================================
 
 reload(){
 
 
-openresty -t && systemctl reload openresty
+if openresty -t;then
+
+
+systemctl reload openresty
 
 
 green "重载完成"
 
 
+else
+
+
+red "配置检测失败"
+
+
+fi
+
+
 pause
 
 
@@ -869,11 +726,26 @@ pause
 
 
 
-# ==============================
+# ==================================================
 # 卸载
-# ==============================
+# ==================================================
 
 remove(){
+
+
+header
+
+
+read -p "确认卸载?(y/N): " R
+
+
+
+if [ "$R" != "y" ] && [ "$R" != "Y" ];then
+
+return
+
+fi
+
 
 
 systemctl stop openresty 2>/dev/null
@@ -885,12 +757,12 @@ apt remove --purge -y openresty* 2>/dev/null
 
 rm -rf /usr/local/openresty
 
+
 rm -rf "$CONF"
 
 
 
 green "卸载完成"
-
 
 
 pause
@@ -900,9 +772,9 @@ pause
 
 
 
-# ==============================
+# ==================================================
 # 菜单
-# ==============================
+# ==================================================
 
 menu(){
 
@@ -984,12 +856,13 @@ exit 0
 
 *)
 
-red "错误"
+red "错误选择"
+
+sleep 1
 
 ;;
 
 esac
-
 
 
 done
@@ -999,9 +872,9 @@ done
 
 
 
-# ==============================
+# ==================================================
 # 启动
-# ==============================
+# ==================================================
 
 if [ "$(id -u)" != "0" ];then
 
