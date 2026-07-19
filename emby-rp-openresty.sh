@@ -2,18 +2,18 @@
 
 # ==================================================
 # Emby Reverse Proxy Manager
-# Version: v2.1
+# Version: v2.0
 #
-# 更新:
+# 基于 v1.9.1 修改
 # - 删除443/证书
 # - HTTP入口固定
-# - 目标地址自动HTTPS
-# - 支持http:// https://
+# - 支持无协议自动HTTPS
+# - 支持http/https
 # - 支持端口判断
 # - 白名单多域名管理
 # ==================================================
 
-VER="v2.1"
+VER="v2.0"
 
 CONF="/etc/emby-rp.conf"
 NGINX="/usr/local/openresty/nginx/conf/nginx.conf"
@@ -37,6 +37,31 @@ read -p "回车继续..."
 }
 
 
+init(){
+
+[ -f "$CONF" ] || cat > "$CONF" <<EOF
+DOMAIN=""
+PORT="80"
+FILTER="0"
+ALLOW_DOMAIN=""
+EOF
+
+source "$CONF"
+
+}
+
+
+save(){
+
+cat > "$CONF" <<EOF
+DOMAIN="$DOMAIN"
+PORT="$PORT"
+FILTER="$FILTER"
+ALLOW_DOMAIN="$ALLOW_DOMAIN"
+EOF
+
+}
+
 
 header(){
 
@@ -51,33 +76,10 @@ echo
 }
 
 
-
-init(){
-
-[ -f "$CONF" ] || cat > "$CONF" <<EOF
-DOMAIN=""
-FILTER="0"
-ALLOW_DOMAIN=""
-EOF
-
-
-source "$CONF"
-
-}
-
-
-
-save(){
-
-cat > "$CONF" <<EOF
-DOMAIN="$DOMAIN"
-FILTER="$FILTER"
-ALLOW_DOMAIN="$ALLOW_DOMAIN"
-EOF
-
-}
-
-
+# ==================================================
+# 安装依赖
+# 增加Debian兼容组件
+# ==================================================
 
 install_pkg(){
 
@@ -88,6 +90,9 @@ apt install -y \
 curl \
 wget \
 socat \
+gnupg \
+gnupg2 \
+ca-certificates \
 software-properties-common \
 lsb-release >/dev/null 2>&1
 
@@ -95,9 +100,9 @@ lsb-release >/dev/null 2>&1
 }
 
 
-
 # ==================================================
-# 保留原OpenResty安装方式
+# OpenResty安装
+# 保留原官方源
 # ==================================================
 
 install_openresty(){
@@ -127,7 +132,7 @@ systemctl enable openresty
 
 
 # ==================================================
-# 生成Nginx配置
+# Nginx配置
 # ==================================================
 
 make_nginx(){
@@ -140,155 +145,158 @@ worker_processes auto;
 
 events {
 
-worker_connections 4096;
+    worker_connections 4096;
 
 }
+
 
 
 http {
 
 
-include mime.types;
+    include mime.types;
 
 
-default_type text/plain;
+    default_type text/plain;
 
 
-charset utf-8;
+    charset utf-8;
 
 
 
-resolver 223.5.5.5 119.29.29.29 1.1.1.1 valid=300s ipv6=off;
+    resolver 223.5.5.5 119.29.29.29 1.1.1.1 valid=300s ipv6=off;
 
 
 
-server {
+    server {
 
 
-listen 80;
+        listen 80;
 
 
-server_name $DOMAIN;
+        server_name $DOMAIN;
 
 
 
-location / {
+        location / {
 
 
 
-# 默认目标协议
+            # 默认HTTPS
 
-set \$backend_scheme "https";
+            set \$backend_scheme "https";
 
-set \$backend_host "";
+            set \$backend_host "";
 
-set \$backend_uri "/";
+            set \$backend_uri "/";
 
 
 
-# ==============================
-# 带协议
-# ==============================
+            # ==========================
+            # 带协议
+            # ==========================
 
-if (\$request_uri ~ "^/(https?)://([^/]+)(.*)") {
+            if (\$request_uri ~ "^/(https?)://([^/]+)(.*)") {
 
 
-set \$backend_scheme \$1;
+                set \$backend_scheme \$1;
 
-set \$backend_host \$2;
+                set \$backend_host \$2;
 
-set \$backend_uri \$3;
+                set \$backend_uri \$3;
 
 
-}
+            }
 
 
 
-# ==============================
-# 不带协议
-# 自动HTTPS
-# ==============================
+            # ==========================
+            # 无协议
+            # 自动HTTPS
+            # ==========================
 
+            if (\$backend_host = "") {
 
-if (\$backend_host = "") {
 
+                if (\$request_uri ~ "^/([^/]+)(.*)") {
 
-if (\$request_uri ~ "^/([^/]+)(.*)") {
 
+                    set \$backend_host \$1;
 
-set \$backend_host \$1;
+                    set \$backend_uri \$2;
 
-set \$backend_uri \$2;
 
+                }
 
-}
 
+            }
 
-}
 
 
+            if (\$backend_uri = "") {
 
-if (\$backend_uri = "") {
 
+                set \$backend_uri "/";
 
-set \$backend_uri "/";
 
+            }
 
-}
 
 
+            # ==========================
+            # 端口判断
+            # ==========================
 
-# ==============================
-# 端口判断
-# ==============================
+            if (\$backend_host ~ ":(80)$") {
 
+                set \$backend_scheme "http";
 
-if (\$backend_host ~ ":(80)$") {
+            }
 
-set \$backend_scheme "http";
 
-}
+            if (\$backend_host ~ ":(443)$") {
 
+                set \$backend_scheme "https";
 
+            }
 
-if (\$backend_host ~ ":(443)$") {
 
-set \$backend_scheme "https";
+            if (\$backend_host ~ ":[0-9]+$") {
 
-}
+                set \$backend_scheme "http";
 
+            }
 
 
-if (\$backend_host ~ ":[0-9]+$") {
 
-set \$backend_scheme "http";
+            if (\$backend_host = "") {
 
-}
 
+                return 400 "目标地址为空";
 
 
-if (\$backend_host = "") {
-
-return 400 "目标地址为空";
-
-}
+            }
 
 
 EOF
-# ==================================================
+# ==============================
 # 白名单
-# ==================================================
+# ==============================
 
 if [ "$FILTER" = "1" ] && [ -n "$ALLOW_DOMAIN" ];then
 
 
 cat >> "$NGINX" <<EOF
 
-if (\$backend_host !~ "(^|\\.)($ALLOW_DOMAIN)\$") {
 
-return 403 "目标域名禁止代理";
+            if (\$backend_host !~ "(^|\\.)($ALLOW_DOMAIN)\$") {
 
-}
+
+                return 403 "目标域名不允许代理";
+
+
+            }
+
 
 EOF
 
@@ -300,61 +308,54 @@ fi
 cat >> "$NGINX" <<'EOF'
 
 
-# ==============================
-# 反向代理
-# ==============================
-
-
-proxy_pass $backend_scheme://$backend_host$backend_uri;
+            proxy_pass $backend_scheme://$backend_host$backend_uri;
 
 
 
-proxy_ssl_server_name on;
-
-proxy_ssl_name $backend_host;
-
-proxy_ssl_verify off;
+            proxy_ssl_server_name on;
 
 
+            proxy_ssl_name $backend_host;
 
-proxy_set_header Host $backend_host;
 
-proxy_set_header X-Real-IP $remote_addr;
+            proxy_ssl_verify off;
 
 
 
-proxy_http_version 1.1;
+            proxy_set_header Host $backend_host;
 
 
-proxy_set_header Upgrade $http_upgrade;
-
-proxy_set_header Connection "upgrade";
-
-
-
-# Emby流媒体
-
-proxy_set_header Range $http_range;
-
-proxy_set_header If-Range $http_if_range;
-
-proxy_force_ranges on;
+            proxy_set_header X-Real-IP $remote_addr;
 
 
 
-proxy_buffering off;
-
-proxy_request_buffering off;
+            proxy_http_version 1.1;
 
 
+            proxy_set_header Upgrade $http_upgrade;
 
-proxy_read_timeout 43200s;
 
-proxy_send_timeout 43200s;
+            proxy_set_header Connection "upgrade";
 
 
 
-}
+            proxy_buffering off;
+
+
+            proxy_request_buffering off;
+
+
+
+            proxy_read_timeout 43200s;
+
+
+            proxy_send_timeout 43200s;
+
+
+
+        }
+
+    }
 
 }
 
@@ -408,7 +409,13 @@ fi
 
 
 
+# 固定80端口
+
+PORT="80"
+
+
 FILTER="0"
+
 
 ALLOW_DOMAIN=""
 
@@ -423,18 +430,28 @@ make_nginx
 green "安装完成"
 
 
+
 echo
+
+
+echo "版本:$VER"
+
+
+echo
+
 
 echo "访问方式:"
 
-echo
 
-echo "完整:"
 echo "http://$DOMAIN/https://目标地址"
 
+
 echo
 
-echo "简写:"
+
+echo "或"
+
+
 echo "http://$DOMAIN/目标地址"
 
 
@@ -463,10 +480,11 @@ header
 
 echo "白名单管理"
 
+
 echo
 
 
-echo "当前状态:"
+echo "状态:"
 
 
 if [ "$FILTER" = "1" ];then
@@ -483,7 +501,8 @@ fi
 
 echo
 
-echo "当前域名:"
+
+echo "当前列表:"
 
 
 if [ -z "$ALLOW_DOMAIN" ];then
@@ -500,17 +519,19 @@ fi
 
 echo
 
-echo "1. 开启"
 
-echo "2. 关闭"
+echo "1.开启"
 
-echo "3. 添加域名"
+echo "2.关闭"
 
-echo "4. 删除域名"
+echo "3.添加域名"
 
-echo "5. 清空"
+echo "4.删除域名"
 
-echo "0. 返回"
+echo "5.清空"
+
+echo "0.返回"
+
 
 
 echo
@@ -523,7 +544,6 @@ read -p "选择:" W
 case $W in
 
 
-
 1)
 
 FILTER=1
@@ -532,10 +552,9 @@ save
 
 make_nginx
 
-green "开启成功"
+green "白名单已开启"
 
 ;;
-
 
 
 2)
@@ -546,10 +565,9 @@ save
 
 make_nginx
 
-yellow "关闭成功"
+yellow "白名单已关闭"
 
 ;;
-
 
 
 3)
@@ -557,8 +575,8 @@ yellow "关闭成功"
 read -p "输入域名:" ADD
 
 
-ADD=$(echo "$ADD" | tr 'A-Z' 'a-z')
 
+ADD=$(echo "$ADD" | tr 'A-Z' 'a-z')
 
 
 if [ -z "$ALLOW_DOMAIN" ];then
@@ -572,7 +590,6 @@ ALLOW_DOMAIN="$ALLOW_DOMAIN|$ADD"
 fi
 
 
-
 save
 
 make_nginx
@@ -582,7 +599,6 @@ green "添加成功"
 
 
 ;;
-
 
 
 4)
@@ -597,20 +613,20 @@ IFS="|" read -ra ARR <<< "$ALLOW_DOMAIN"
 
 
 
-for i in "${ARR[@]}"
+for ITEM in "${ARR[@]}"
 do
 
 
-if [ "$i" != "$DEL" ] && [ -n "$i" ];then
+if [ "$ITEM" != "$DEL" ] && [ -n "$ITEM" ];then
 
 
 if [ -z "$NEW" ];then
 
-NEW="$i"
+NEW="$ITEM"
 
 else
 
-NEW="$NEW|$i"
+NEW="$NEW|$ITEM"
 
 fi
 
@@ -623,6 +639,7 @@ done
 
 
 ALLOW_DOMAIN="$NEW"
+
 
 
 save
@@ -661,7 +678,7 @@ return
 
 *)
 
-red "错误"
+red "错误选择"
 
 ;;
 
@@ -681,21 +698,22 @@ done
 
 show(){
 
+
 header
 
-echo "========== 当前配置 =========="
 
 cat "$CONF"
 
 
 pause
 
+
 }
 
 
 
 # ==================================================
-# 重载服务
+# 重载
 # ==================================================
 
 reload(){
@@ -713,7 +731,7 @@ green "重载完成"
 else
 
 
-red "配置检测失败"
+red "配置错误"
 
 
 fi
@@ -733,33 +751,16 @@ pause
 remove(){
 
 
-header
-
-
-read -p "确认卸载?(y/N): " R
-
-
-
-if [ "$R" != "y" ] && [ "$R" != "Y" ];then
-
-return
-
-fi
-
-
-
 systemctl stop openresty 2>/dev/null
 
 
 apt remove --purge -y openresty* 2>/dev/null
 
 
-
 rm -rf /usr/local/openresty
 
 
 rm -rf "$CONF"
-
 
 
 green "卸载完成"
@@ -788,17 +789,22 @@ header
 
 
 
-echo "1. 安装反代"
+echo "1.安装反代"
 
-echo "2. 白名单管理"
 
-echo "3. 查看配置"
+echo "2.白名单管理"
 
-echo "4. 重载服务"
 
-echo "5. 卸载"
+echo "3.查看配置"
 
-echo "0. 退出"
+
+echo "4.重载OpenResty"
+
+
+echo "5.卸载"
+
+
+echo "0.退出"
 
 
 
@@ -856,13 +862,12 @@ exit 0
 
 *)
 
-red "错误选择"
-
-sleep 1
+red "错误"
 
 ;;
 
 esac
+
 
 
 done
@@ -878,13 +883,18 @@ done
 
 if [ "$(id -u)" != "0" ];then
 
+
 red "请使用root运行"
 
+
 exit 1
+
 
 fi
 
 
+
 init
+
 
 menu
