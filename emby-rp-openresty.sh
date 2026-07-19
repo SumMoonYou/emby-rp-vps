@@ -2,26 +2,31 @@
 
 # ==========================================================
 # Emby Proxy Manager
-# Script Version: v1.8.1
+# Version: v1.9.0
 #
-# 功能:
-#  - 动态反代
-#  - Emby优化
-#  - WebSocket
-#  - HTTPS证书
-#  - 根域名白名单(可选)
-#  - 人性化错误页面
+# Features:
+# - OpenResty reverse proxy
+# - Emby optimized
+# - WebSocket support
+# - HTTPS SNI
+# - Optional root domain whitelist
+# - Friendly error pages
+# - Script version independent
 #
 # ==========================================================
 
 
 SCRIPT_NAME="Emby Proxy Manager"
-SCRIPT_VERSION="v1.8.1"
+SCRIPT_VERSION="v1.9.0"
 
+
+BASE_DIR="/etc/emby_proxy"
+
+CONFIG_FILE="$BASE_DIR/config.conf"
+
+TEMPLATE_FILE="$BASE_DIR/nginx.conf.template"
 
 NGINX_CONF="/usr/local/openresty/nginx/conf/nginx.conf"
-
-CONFIG_FILE="/etc/emby_proxy.conf"
 
 SSL_DIR="/etc/openresty/ssl"
 
@@ -29,9 +34,33 @@ BACKUP_DIR="/root/emby_proxy_backup"
 
 
 
-pause(){
+mkdir -p "$BASE_DIR"
 
-echo
+
+
+green(){
+
+echo -e "\033[32m$1\033[0m"
+
+}
+
+
+red(){
+
+echo -e "\033[31m$1\033[0m"
+
+}
+
+
+yellow(){
+
+echo -e "\033[33m$1\033[0m"
+
+}
+
+
+
+pause(){
 
 read -p "按回车继续..."
 
@@ -39,42 +68,17 @@ read -p "按回车继续..."
 
 
 
-info(){
-
-echo -e "\033[36m$1\033[0m"
-
-}
-
-
-
-ok(){
-
-echo -e "\033[32m$1\033[0m"
-
-}
-
-
-
-err(){
-
-echo -e "\033[31m$1\033[0m"
-
-}
-
-
-
-
-show_header(){
+header(){
 
 clear
 
-echo "================================"
+echo "===================================="
 
 echo " $SCRIPT_NAME"
 
 echo " 脚本版本: $SCRIPT_VERSION"
 
-echo "================================"
+echo "===================================="
 
 echo
 
@@ -88,7 +92,7 @@ root_check(){
 
 if [ "$(id -u)" != "0" ];then
 
-err "请使用 root 用户运行"
+red "请使用 root 用户运行"
 
 exit 1
 
@@ -96,6 +100,52 @@ fi
 
 }
 
+
+
+
+init_config(){
+
+
+if [ ! -f "$CONFIG_FILE" ];then
+
+
+cat > "$CONFIG_FILE" <<EOF
+
+DOMAIN=""
+
+PORT="80"
+
+EMAIL=""
+
+
+# 0关闭限制
+
+# 1开启根域名限制
+
+DOMAIN_FILTER="0"
+
+
+ALLOW_ROOT_DOMAIN=""
+
+
+SCRIPT_VERSION="$SCRIPT_VERSION"
+
+EOF
+
+
+fi
+
+
+}
+
+
+
+
+load_config(){
+
+source "$CONFIG_FILE"
+
+}
 
 
 
@@ -111,20 +161,9 @@ PORT="$PORT"
 
 EMAIL="$EMAIL"
 
-
-# 目标域名限制
-
-# 0 = 不限制
-
-# 1 = 开启
-
 DOMAIN_FILTER="$DOMAIN_FILTER"
 
-
-# 根域名
-
 ALLOW_ROOT_DOMAIN="$ALLOW_ROOT_DOMAIN"
-
 
 SCRIPT_VERSION="$SCRIPT_VERSION"
 
@@ -137,35 +176,11 @@ EOF
 
 
 
-load_config(){
-
-
-if [ -f "$CONFIG_FILE" ];then
-
-
-source "$CONFIG_FILE"
-
-
-else
-
-
-DOMAIN_FILTER=0
-
-
-fi
-
-
-}
-
-
-
-
 
 install_dependencies(){
 
 
-info "安装依赖..."
-
+yellow "安装依赖..."
 
 apt update
 
@@ -183,7 +198,6 @@ cron \
 software-properties-common
 
 
-
 }
 
 
@@ -198,16 +212,16 @@ if command -v openresty >/dev/null 2>&1
 then
 
 
-ok "OpenResty 已存在"
+green "OpenResty 已存在"
 
 return
+
 
 fi
 
 
 
-
-info "安装 OpenResty..."
+yellow "安装 OpenResty..."
 
 
 
@@ -238,16 +252,16 @@ systemctl enable openresty
 
 
 
-
 show_status(){
 
 
-show_header
+header
 
 
 echo "脚本版本: $SCRIPT_VERSION"
 
 echo
+
 
 
 if command -v openresty >/dev/null 2>&1
@@ -282,212 +296,40 @@ pause
 
 
 
+show_config(){
 
 
-
-uninstall_all(){
-
-
-show_header
+header
 
 
-echo "开始清理..."
+if [ -f "$CONFIG_FILE" ]
 
+then
 
+cat "$CONFIG_FILE"
 
-systemctl stop openresty 2>/dev/null
+else
 
+echo "没有配置"
 
-systemctl disable openresty 2>/dev/null
+fi
 
-
-
-apt remove --purge -y openresty* 2>/dev/null
-
-
-
-rm -rf /usr/local/openresty
-
-
-rm -rf /etc/openresty
-
-
-rm -rf "$CONFIG_FILE"
-
-
-rm -rf "$BACKUP_DIR"
-
-
-
-systemctl daemon-reload
-
-
-
-ok "清理完成"
 
 
 pause
 
 
 }
-
-
-
-
-
-
-menu(){
-
-
-while true
-
-do
-
-
-show_header
-
-
-
-echo "1. 安装反代"
-
-echo "2. 设置域名白名单"
-
-echo "3. 查看配置"
-
-echo "4. 卸载"
-
-echo "5. 查看状态"
-
-echo "0. 退出"
-
-
-
-echo
-
-
-read -p "请选择: " CHOOSE
-
-
-
-case $CHOOSE in
-
-
-1)
-
-install_proxy
-
-;;
-
-
-2)
-
-domain_filter_menu
-
-;;
-
-
-3)
-
-show_config
-
-;;
-
-
-4)
-
-uninstall_all
-
-;;
-
-
-5)
-
-show_status
-
-;;
-
-
-0)
-
-exit
-
-;;
-
-
-*)
-
-echo "错误"
-
-sleep 1
-
-;;
-
-esac
-
-
-
-done
-
-
-}
 # ==========================================================
-# 域名白名单检查
+# 创建 nginx 模板
 # ==========================================================
 
-
-domain_check_config(){
-
-
-if [ "$DOMAIN_FILTER" != "1" ];then
-
-return
-
-fi
+create_template(){
 
 
-
-if [ -z "$ALLOW_ROOT_DOMAIN" ];then
-
-return
-
-fi
-
-
-}
-
-
-
-
-
-# ==========================================================
-# 生成 nginx 配置
-# ==========================================================
-
-
-create_nginx(){
-
-
-info "生成 OpenResty 配置..."
-
-
-
-mkdir -p "$BACKUP_DIR"
-
-
-
-if [ -f "$NGINX_CONF" ];then
-
-cp "$NGINX_CONF" "$BACKUP_DIR/nginx.conf.$(date +%s)"
-
-fi
-
-
-
-cat > "$NGINX_CONF" <<EOF
-
+cat > "$TEMPLATE_FILE" <<'NGINX'
 
 worker_processes auto;
-
 
 
 events {
@@ -514,11 +356,7 @@ http {
     sendfile on;
 
 
-    tcp_nopush on;
-
-
     keepalive_timeout 65;
-
 
 
 
@@ -532,191 +370,51 @@ http {
     server {
 
 
-
-EOF
-
+        LISTEN_CONFIG
 
 
-if [ "$PORT" = "443" ];then
-
-
-cat >> "$NGINX_CONF" <<EOF
-
-        listen 443 ssl;
-
-
-        server_name $DOMAIN;
+        server_name DOMAIN_CONFIG;
 
 
 
-        ssl_certificate $SSL_DIR/fullchain.pem;
-
-
-        ssl_certificate_key $SSL_DIR/key.pem;
+        SSL_CONFIG
 
 
 
-EOF
-
-
-else
-
-
-cat >> "$NGINX_CONF" <<EOF
-
-        listen $PORT;
-
-
-        server_name $DOMAIN;
-
-
-
-EOF
-
-
-fi
-
-
-
-cat >> "$NGINX_CONF" <<EOF
-
-
-        error_page 403 /403.html;
-
-
-        error_page 404 /404.html;
-
-
-        error_page 502 503 504 /502.html;
-
-
-
-
-        location = /403.html {
+        location = / {
 
 
             default_type text/html;
 
 
-            return 403 '
+            return 200 '
 
 <!DOCTYPE html>
 
 <html>
 
+<head>
+
 <meta charset="utf-8">
 
-<title>403</title>
+<title>Emby Proxy</title>
+
+</head>
+
 
 <body>
-
-
-<h2>🚫 访问被拒绝</h2>
-
-<p>目标地址不允许代理</p>
-
-
-<p>请检查域名白名单设置</p>
-
-
-</body>
-
-</html>';
-
-        }
-
-
-
-
-
-        location = /404.html {
-
-
-            return 404 '
-
-<!DOCTYPE html>
-
-<html>
-
-<meta charset="utf-8">
-
-<h2>404</h2>
-
-<p>页面不存在</p>
-
-<p>Emby Proxy Manager $SCRIPT_VERSION</p>
-
-</html>';
-
-        }
-
-
-
-
-
-
-        location = /502.html {
-
-
-            return 502 '
-
-<!DOCTYPE html>
-
-<html>
-
-<meta charset="utf-8">
-
-
-<h2>⚠️ 后端连接失败</h2>
-
-
-<p>可能原因:</p>
-
-<p>1. 目标服务器离线</p>
-
-<p>2. 地址错误</p>
-
-<p>3. HTTPS握手失败</p>
-
-
-<p>请检查目标地址</p>
-
-
-</html>';
-
-        }
-
-
-
-
-
-
-        location / {
-
-
-
-            if ($request_uri !~ "^/https?://") {
-
-
-                return 200 '
-
-<!DOCTYPE html>
-
-<html>
-
-<meta charset="utf-8">
 
 
 <h2>🚀 Emby Proxy Manager</h2>
 
 
-<p>版本: $SCRIPT_VERSION</p>
+<p>版本：SCRIPT_VERSION_CONFIG</p>
 
 
 <hr>
 
 
-<p>使用方法:</p>
+<p>使用方法：</p>
 
 
 <p>
@@ -726,8 +424,11 @@ https://你的域名/https://目标地址
 </p>
 
 
+<p>
 
-<p>示例:</p>
+示例：
+
+</p>
 
 
 <p>
@@ -737,12 +438,13 @@ https://proxy.com/https://emby.example.com
 </p>
 
 
+
 <hr>
 
 
 <p>
 
-支持:
+支持：
 
 <br>
 
@@ -758,10 +460,82 @@ https://proxy.com/https://emby.example.com
 
 <br>
 
-✓ 大文件播放
+✓ Range播放
 
 </p>
 
+
+</body>
+
+</html>';
+
+        }
+
+
+
+
+
+        location / {
+
+
+
+            set $backend_host "";
+
+            set $backend_uri "/";
+
+
+
+            if ($request_uri ~ "^/https?://([^/]+)(.*)") {
+
+
+                set $backend_host $1;
+
+
+                set $backend_uri $2;
+
+
+            }
+
+
+
+
+            if ($backend_host = "") {
+
+
+                return 400 '
+
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="utf-8">
+
+</head>
+
+
+<body>
+
+
+<h2>⚠️ 请求格式错误</h2>
+
+
+<p>
+
+正确格式：
+
+</p>
+
+
+<p>
+
+https://域名/https://目标地址
+
+</p>
+
+
+</body>
 
 </html>';
 
@@ -769,90 +543,13 @@ https://proxy.com/https://emby.example.com
 
 
 
+            DOMAIN_CHECK
 
-            set \$backend_host "";
-
-            set \$backend_uri "/";
-
-
-
-            if (\$request_uri ~ "^/https?://([^/]+)(.*)") {
-
-
-                set \$backend_host \$1;
-
-
-                set \$backend_uri \$2;
-
-
-            }
-
-
-
-
-EOF
-
-
-
-# 白名单逻辑
-
-if [ "$DOMAIN_FILTER" = "1" ] && [ -n "$ALLOW_ROOT_DOMAIN" ];then
-
-
-cat >> "$NGINX_CONF" <<EOF
-
-
-            set \$domain_allow 0;
-
-
-
-            if (\$backend_host = "$ALLOW_ROOT_DOMAIN") {
-
-
-                set \$domain_allow 1;
-
-
-            }
-
-
-
-
-            if (\$backend_host ~* "\.${ALLOW_ROOT_DOMAIN}$") {
-
-
-                set \$domain_allow 1;
-
-
-            }
-
-
-
-
-            if (\$domain_allow = 0) {
-
-
-                return 403;
-
-
-            }
-
-
-
-EOF
-
-
-fi
-
-
-
-cat >> "$NGINX_CONF" <<'EOF'
 
 
             proxy_pass https://$backend_host$backend_uri;
 
 
-
-            # HTTPS SNI
 
             proxy_ssl_server_name on;
 
@@ -899,7 +596,15 @@ cat >> "$NGINX_CONF" <<'EOF'
 
 
 
+            proxy_set_header Range $http_range;
+
+
+            proxy_set_header If-Range $http_if_range;
+
+
+
         }
+
 
 
     }
@@ -907,8 +612,152 @@ cat >> "$NGINX_CONF" <<'EOF'
 
 }
 
+NGINX
+}
+# ==========================================================
+# 生成最终 nginx 配置
+# ==========================================================
 
-EOF
+
+generate_nginx(){
+
+
+mkdir -p "$BACKUP_DIR"
+
+
+
+if [ -f "$NGINX_CONF" ];then
+
+cp "$NGINX_CONF" "$BACKUP_DIR/nginx.conf.$(date +%s)"
+
+fi
+
+
+
+
+TMP="/tmp/emby_nginx.conf"
+
+
+
+cp "$TEMPLATE_FILE" "$TMP"
+
+
+
+# 监听端口
+
+if [ "$PORT" = "443" ];then
+
+
+sed -i "s|LISTEN_CONFIG|listen 443 ssl;|" "$TMP"
+
+
+
+sed -i "s|SSL_CONFIG|ssl_certificate $SSL_DIR/fullchain.pem;
+        ssl_certificate_key $SSL_DIR/key.pem;|" "$TMP"
+
+
+
+else
+
+
+sed -i "s|LISTEN_CONFIG|listen $PORT;|" "$TMP"
+
+
+
+sed -i "/SSL_CONFIG/d" "$TMP"
+
+
+
+fi
+
+
+
+
+# 域名
+
+sed -i \
+
+"s|DOMAIN_CONFIG|$DOMAIN|g" \
+
+"$TMP"
+
+
+
+
+
+# 版本
+
+sed -i \
+
+"s|SCRIPT_VERSION_CONFIG|$SCRIPT_VERSION|g" \
+
+"$TMP"
+
+
+
+
+
+
+# 白名单
+
+if [ "$DOMAIN_FILTER" = "1" ] && [ -n "$ALLOW_ROOT_DOMAIN" ];then
+
+
+
+CHECK='
+
+set $domain_allow 0;
+
+if ($backend_host = "'$ALLOW_ROOT_DOMAIN'") {
+
+    set $domain_allow 1;
+
+}
+
+if ($backend_host ~* "\.'$ALLOW_ROOT_DOMAIN'$") {
+
+    set $domain_allow 1;
+
+}
+
+if ($domain_allow = 0) {
+
+    return 403;
+
+}
+
+'
+
+
+
+sed -i \
+
+"s|DOMAIN_CHECK|$CHECK|g" \
+
+"$TMP"
+
+
+
+else
+
+
+
+sed -i \
+
+"s|DOMAIN_CHECK||g" \
+
+"$TMP"
+
+
+
+fi
+
+
+
+
+
+cp "$TMP" "$NGINX_CONF"
+
 
 
 
@@ -918,11 +767,15 @@ openresty -t
 
 if [ $? != 0 ];then
 
-err "nginx配置错误"
+
+red "nginx配置检测失败"
+
 
 return 1
 
+
 fi
+
 
 
 
@@ -930,117 +783,8 @@ systemctl restart openresty
 
 
 
-ok "OpenResty启动成功"
+green "OpenResty启动成功"
 
-
-}
-# ==========================================================
-# 白名单设置菜单
-# ==========================================================
-
-
-domain_filter_menu(){
-
-
-load_config
-
-
-show_header
-
-
-echo "当前域名限制状态:"
-
-
-
-if [ "$DOMAIN_FILTER" = "1" ];then
-
-
-echo "✅ 已开启"
-
-echo "根域名: $ALLOW_ROOT_DOMAIN"
-
-
-
-else
-
-
-echo "❌ 已关闭"
-
-
-fi
-
-
-
-echo
-
-echo "1. 开启白名单"
-
-echo "2. 关闭白名单"
-
-echo "3. 设置根域名"
-
-echo "0. 返回"
-
-
-
-read -p "选择: " C
-
-
-
-case $C in
-
-
-1)
-
-DOMAIN_FILTER=1
-
-ok "白名单已开启"
-
-save_config
-
-;;
-
-
-2)
-
-DOMAIN_FILTER=0
-
-ok "白名单已关闭"
-
-save_config
-
-;;
-
-
-3)
-
-read -p "输入根域名(例如 mobaiemby.site): " ALLOW_ROOT_DOMAIN
-
-
-save_config
-
-
-;;
-
-
-0)
-
-return
-
-;;
-
-
-*)
-
-echo "错误"
-
-;;
-
-esac
-
-
-
-pause
 
 
 }
@@ -1048,58 +792,19 @@ pause
 
 
 
-
-
 # ==========================================================
-# 查看配置
-# ==========================================================
-
-
-show_config(){
-
-
-show_header
-
-
-if [ -f "$CONFIG_FILE" ];then
-
-
-cat "$CONFIG_FILE"
-
-
-
-else
-
-
-echo "暂无配置"
-
-
-fi
-
-
-
-pause
-
-
-}
-
-
-
-
-
-# ==========================================================
-# acme证书
+# 申请证书
 # ==========================================================
 
 
 install_cert(){
 
 
-
 if [ "$PORT" != "443" ];then
 
 
-info "80端口模式，不申请证书"
+yellow "80端口模式，跳过证书"
+
 
 return
 
@@ -1108,19 +813,21 @@ fi
 
 
 
+mkdir -p "$SSL_DIR"
+
+
 
 if [ -z "$EMAIL" ];then
 
 
-read -p "输入证书邮箱: " EMAIL
+read -p "请输入证书邮箱: " EMAIL
 
 
 fi
 
 
 
-
-info "安装 acme.sh"
+yellow "安装 acme.sh"
 
 
 
@@ -1137,15 +844,11 @@ curl https://get.acme.sh | sh -s email="$EMAIL"
 
 
 
-mkdir -p "$SSL_DIR"
-
-
-
 systemctl stop openresty
 
 
 
-info "申请证书..."
+yellow "申请证书..."
 
 
 
@@ -1159,10 +862,11 @@ info "申请证书..."
 
 
 
+
 if [ $? != 0 ];then
 
 
-err "证书申请失败"
+red "证书申请失败"
 
 
 systemctl start openresty
@@ -1172,6 +876,7 @@ return 1
 
 
 fi
+
 
 
 
@@ -1190,12 +895,11 @@ fi
 
 
 
-ok "证书安装成功"
 
+green "证书安装完成"
 
 
 }
-
 
 
 
@@ -1208,7 +912,7 @@ ok "证书安装成功"
 install_proxy(){
 
 
-show_header
+header
 
 
 
@@ -1219,28 +923,10 @@ install_openresty
 
 
 
-
 echo
 
 
 read -p "请输入代理域名: " DOMAIN
-
-
-
-if [ -z "$DOMAIN" ];then
-
-
-err "域名不能为空"
-
-
-pause
-
-
-return
-
-
-fi
-
 
 
 
@@ -1249,19 +935,19 @@ echo
 
 echo "选择端口"
 
-echo "1. 80 HTTP"
+echo "1. 80"
 
-echo "2. 443 HTTPS"
+echo "2. 443"
 
 echo "3. 自定义"
 
 
 
-read -p "选择: " PORT_CHOICE
+read -p "选择: " CH
 
 
 
-case $PORT_CHOICE in
+case $CH in
 
 
 1)
@@ -1271,13 +957,11 @@ PORT=80
 ;;
 
 
-
 2)
 
 PORT=443
 
 ;;
-
 
 
 3)
@@ -1287,16 +971,13 @@ read -p "输入端口: " PORT
 ;;
 
 
-
 *)
 
 PORT=80
 
 ;;
 
-
 esac
-
 
 
 
@@ -1305,7 +986,7 @@ esac
 if [ "$PORT" = "443" ];then
 
 
-read -p "请输入证书邮箱: " EMAIL
+read -p "请输入邮箱: " EMAIL
 
 
 install_cert
@@ -1315,57 +996,133 @@ fi
 
 
 
+# 默认关闭限制
 
-
-# 默认关闭域名限制
-
-if [ -z "$DOMAIN_FILTER" ];then
-
-DOMAIN_FILTER=0
-
-fi
-
+[ -z "$DOMAIN_FILTER" ] && DOMAIN_FILTER=0
 
 
 
 save_config
 
 
+create_template
 
-create_nginx
 
+generate_nginx
+
+
+
+green "安装完成"
+
+
+echo
+
+echo "版本: $SCRIPT_VERSION"
+
+echo "域名: $DOMAIN"
+
+echo "端口: $PORT"
+
+
+pause
+
+
+}
+
+
+
+
+
+# ==========================================================
+# 白名单菜单
+# ==========================================================
+
+
+domain_filter_menu(){
+
+
+load_config
+
+
+
+header
+
+
+echo "当前状态:"
+
+
+if [ "$DOMAIN_FILTER" = "1" ];then
+
+
+echo "开启"
+
+echo "根域名:$ALLOW_ROOT_DOMAIN"
+
+
+else
+
+
+echo "关闭"
+
+
+fi
 
 
 
 echo
 
+echo "1.开启"
 
-echo "================================"
+echo "2.关闭"
 
-ok "安装完成"
+echo "3.设置根域名"
 
-
-echo
-
-echo "脚本版本: $SCRIPT_VERSION"
-
-echo "代理域名: $DOMAIN"
-
-echo "监听端口: $PORT"
-
-
-echo
-
-
-echo "访问格式:"
-
-
-echo "https://$DOMAIN/https://目标地址"
+echo "0.返回"
 
 
 
-echo "================================"
+read -p "选择:" X
 
+
+
+case $X in
+
+
+1)
+
+DOMAIN_FILTER=1
+
+;;
+
+
+2)
+
+DOMAIN_FILTER=0
+
+;;
+
+
+3)
+
+read -p "根域名:" ALLOW_ROOT_DOMAIN
+
+;;
+
+
+0)
+
+return
+
+;;
+
+esac
+
+
+
+save_config
+
+
+generate_nginx
 
 
 pause
@@ -1373,11 +1130,246 @@ pause
 
 }
 # ==========================================================
-# 程序入口
+# 卸载清理
+# ==========================================================
+
+
+uninstall_all(){
+
+
+header
+
+
+yellow "开始卸载..."
+
+
+
+systemctl stop openresty 2>/dev/null
+
+
+systemctl disable openresty 2>/dev/null
+
+
+
+apt remove --purge -y openresty* 2>/dev/null
+
+
+
+rm -rf /usr/local/openresty
+
+
+rm -rf /etc/openresty
+
+
+rm -rf "$BASE_DIR"
+
+
+rm -rf "$BACKUP_DIR"
+
+
+
+systemctl daemon-reload
+
+
+
+green "OpenResty及脚本配置已清理"
+
+
+
+pause
+
+
+}
+
+
+
+
+
+# ==========================================================
+# 状态
+# ==========================================================
+
+
+status(){
+
+
+header
+
+
+
+echo "脚本版本: $SCRIPT_VERSION"
+
+
+echo
+
+
+
+if command -v openresty >/dev/null 2>&1
+
+then
+
+
+
+openresty -v
+
+
+echo
+
+
+
+systemctl status openresty --no-pager
+
+
+
+else
+
+
+echo "OpenResty 未安装"
+
+
+fi
+
+
+
+pause
+
+
+}
+
+
+
+
+
+
+
+# ==========================================================
+# 主菜单
+# ==========================================================
+
+
+menu(){
+
+
+
+while true
+
+do
+
+
+
+header
+
+
+
+echo "1. 安装/配置反代"
+
+
+echo "2. 白名单管理"
+
+
+echo "3. 查看配置"
+
+
+echo "4. 查看状态"
+
+
+echo "5. 卸载清理"
+
+
+echo "0. 退出"
+
+
+
+echo
+
+
+read -p "请选择: " MENU
+
+
+
+case $MENU in
+
+
+
+1)
+
+install_proxy
+
+;;
+
+
+
+2)
+
+domain_filter_menu
+
+;;
+
+
+
+3)
+
+show_config
+
+;;
+
+
+
+4)
+
+status
+
+;;
+
+
+
+5)
+
+uninstall_all
+
+;;
+
+
+
+0)
+
+exit 0
+
+;;
+
+
+
+*)
+
+red "错误选择"
+
+sleep 1
+
+;;
+
+esac
+
+
+
+done
+
+
+}
+
+
+
+
+
+
+# ==========================================================
+# 启动
 # ==========================================================
 
 
 root_check
+
+
+init_config
 
 
 load_config
