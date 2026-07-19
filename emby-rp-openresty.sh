@@ -2,24 +2,19 @@
 
 # ==================================================
 # Emby Reverse Proxy Manager
-# Version: v3.0 Lua版
+# Version: v3.1 Lua
 #
-# 功能:
-# 1. OpenResty官方源安装
-# 2. Lua动态反代
-# 3. 自动HTTPS补全
-# 4. HTTP/HTTPS支持
-# 5. 端口自动判断
-# 6. 白名单管理
+# OpenResty + Lua动态反代
 # ==================================================
 
-VER="v3.0"
+VER="v3.1"
 
 CONF="/etc/emby-rp.conf"
 
 NGINX="/usr/local/openresty/nginx/conf/nginx.conf"
 
 LUA="/usr/local/openresty/nginx/conf/lua_init.lua"
+
 
 
 green(){
@@ -36,13 +31,6 @@ echo -e "\033[31m$1\033[0m"
 }
 
 
-yellow(){
-
-echo -e "\033[33m$1\033[0m"
-
-}
-
-
 pause(){
 
 read -p "回车继续..."
@@ -53,9 +41,9 @@ read -p "回车继续..."
 
 init(){
 
+
 [ -f "$CONF" ] || cat > "$CONF" <<EOF
 DOMAIN=""
-PORT="80"
 FILTER="0"
 ALLOW_DOMAIN=""
 EOF
@@ -63,18 +51,20 @@ EOF
 
 source "$CONF"
 
+
 }
 
 
 
 save(){
 
+
 cat > "$CONF" <<EOF
 DOMAIN="$DOMAIN"
-PORT="80"
 FILTER="$FILTER"
 ALLOW_DOMAIN="$ALLOW_DOMAIN"
 EOF
+
 
 }
 
@@ -82,7 +72,9 @@ EOF
 
 header(){
 
+
 clear
+
 
 echo "================================"
 
@@ -92,9 +84,12 @@ echo " Version: $VER"
 
 echo "================================"
 
+
 echo
 
 }
+
+
 
 
 
@@ -103,6 +98,7 @@ echo
 # ==================================================
 
 install_pkg(){
+
 
 apt update >/dev/null 2>&1
 
@@ -116,7 +112,9 @@ ca-certificates \
 software-properties-common \
 lsb-release >/dev/null 2>&1
 
+
 }
+
 
 
 
@@ -132,19 +130,13 @@ command -v openresty >/dev/null && return 0
 
 
 
-# 删除旧源
-
 rm -f /etc/apt/sources.list.d/openresty.list
 
 
 
-# 导入官方KEY
-
 wget -qO- https://openresty.org/package/pubkey.gpg | apt-key add -
 
 
-
-# 添加官方源
 
 echo "deb http://openresty.org/package/debian $(lsb_release -sc) openresty" \
 > /etc/apt/sources.list.d/openresty.list
@@ -181,7 +173,7 @@ return 0
 
 }
 # ==================================================
-# 写入Lua白名单配置
+# 写入Lua配置
 # ==================================================
 
 write_lua(){
@@ -209,12 +201,14 @@ dict:set(
 
 EOF
 
+
 }
 
 
 
+
 # ==================================================
-# Nginx配置(Lua动态反代)
+# 生成OpenResty Lua反代配置
 # ==================================================
 
 make_nginx(){
@@ -226,7 +220,9 @@ write_lua
 
 cat > "$NGINX" <<EOF
 
+
 worker_processes auto;
+
 
 
 events {
@@ -253,6 +249,7 @@ http {
     lua_shared_dict allow_domain 10m;
 
 
+
     init_by_lua_file $LUA;
 
 
@@ -271,11 +268,7 @@ http {
 
 
 
-        set \$backend_scheme "https";
-
-        set \$backend_host "";
-
-        set \$backend_uri "/";
+        set \$upstream "";
 
 
 
@@ -286,105 +279,115 @@ http {
             rewrite_by_lua_block {
 
 
-                local uri = ngx.var.uri
+
+                local uri = ngx.var.request_uri
+
 
 
                 local target = uri:sub(2)
 
 
 
+
                 if target == "" then
 
 
-                    ngx.exit(400)
+                    ngx.status = 400
+
+
+                    ngx.header.content_type="text/plain; charset=utf-8"
+
+
+
+                    ngx.say([[
+
+❌ 400 请求错误
+
+
+原因:
+
+没有输入目标地址
+
+
+
+正确格式:
+
+https://你的域名/目标地址
+
+
+
+示例:
+
+https://你的域名/https://cdn.zhezhi.art
+
+或者:
+
+https://你的域名/cdn.zhezhi.art
+
+]])
+
+
+
+                    return ngx.exit(400)
 
 
                 end
 
 
 
-                local scheme = "https"
 
-
-                local host = target
-
-
-                local path = "/"
+                local url = target
 
 
 
-                if target:match("^http://") then
+
+                -- 自动补HTTPS
 
 
-                    scheme="http"
+                if not url:match("^https?://") then
 
 
-                    host=target:gsub("^http://","")
-
-
-
-                elseif target:match("^https://") then
-
-
-                    scheme="https"
-
-
-                    host=target:gsub("^https://","")
+                    url="https://"..url
 
 
                 end
 
 
 
-                local pos = host:find("/")
 
 
-
-                if pos then
-
-
-                    path=host:sub(pos)
+                -- 白名单检测
 
 
-                    host=host:sub(1,pos-1)
+                local dict = ngx.shared.allow_domain
 
-
-                end
-
-
-
-                if host:match(":%d+$") then
-
-
-                    scheme="http"
-
-
-                end
-
-
-
-                -- 白名单
-
-                local dict=ngx.shared.allow_domain
 
 
 
                 if dict:get("filter")=="1" then
 
 
+
+                    local host =
+                    url:match("^https?://([^/]+)")
+
+
+
                     local allow=false
 
 
 
-                    for d in string.gmatch(
+
+                    for domain in string.gmatch(
                     dict:get("domains") or "",
                     "[^|]+"
                     )
                     do
 
 
-                        if host==d or
-                        host:sub(-#d-1)=="."..d
+
+                        if host==domain or
+                        host:sub(-#domain-1)=="."..domain
                         then
 
 
@@ -398,24 +401,48 @@ http {
 
 
 
+
+
                     if not allow then
 
 
-                        ngx.exit(403)
+                        ngx.status=403
+
+
+                        ngx.header.content_type="text/plain; charset=utf-8"
+
+
+
+                        ngx.say([[
+
+❌ 403 禁止访问
+
+
+原因:
+
+目标域名不在白名单
+
+
+请添加允许代理的域名后重试
+
+]])
+
+
+
+                        return ngx.exit(403)
 
 
                     end
+
 
 
                 end
 
 
 
-                ngx.var.backend_scheme=scheme
 
-                ngx.var.backend_host=host
 
-                ngx.var.backend_uri=path
+                ngx.var.upstream=url
 
 
 
@@ -423,21 +450,23 @@ http {
 
 
 
-            proxy_pass \$backend_scheme://\$backend_host\$backend_uri;
+
+            proxy_pass \$upstream;
 
 
 
             proxy_ssl_server_name on;
 
 
-            proxy_ssl_name \$backend_host;
-
-
             proxy_ssl_verify off;
 
 
 
-            proxy_set_header Host \$backend_host;
+            proxy_intercept_errors on;
+
+
+
+            proxy_set_header Host \$host;
 
 
             proxy_set_header X-Real-IP \$remote_addr;
@@ -445,6 +474,7 @@ http {
 
 
             proxy_http_version 1.1;
+
 
 
             proxy_set_header Upgrade \$http_upgrade;
@@ -470,12 +500,51 @@ http {
         }
 
 
+
+
+        error_page 502 = @err502;
+
+
+        error_page 504 = @err504;
+
+
+
+
+
+        location @err502 {
+
+
+            default_type text/plain;
+
+
+            return 502 "❌ 502 代理失败\n\n原因:\n目标服务器无法连接\n\n请检查目标地址是否正确\n";
+
+
+        }
+
+
+
+
+        location @err504 {
+
+
+            default_type text/plain;
+
+
+            return 504 "❌ 504 请求超时\n\n原因:\n目标服务器响应时间过长\n";
+
+
+        }
+
+
     }
 
 
 }
 
+
 EOF
+
 
 
 
@@ -524,13 +593,18 @@ install_openresty
 
 if [ $? != 0 ];then
 
+
 red "OpenResty安装失败"
+
 
 pause
 
+
 return
 
+
 fi
+
 
 
 
@@ -538,12 +612,8 @@ read -p "代理域名:" DOMAIN
 
 
 
-PORT="80"
-
-
 
 FILTER="0"
-
 
 
 ALLOW_DOMAIN=""
@@ -554,19 +624,25 @@ save
 
 
 
+
 make_nginx
 
 
 
 if [ $? != 0 ];then
 
+
 red "配置失败"
+
 
 pause
 
+
 return
 
+
 fi
+
 
 
 
@@ -578,6 +654,9 @@ echo
 
 
 echo "访问格式:"
+
+
+echo
 
 
 echo "http://$DOMAIN/目标地址"
@@ -594,10 +673,13 @@ echo "http://$DOMAIN/cdn.zhezhi.art"
 
 
 
-echo "自动解析:"
+echo
 
 
-echo "https://cdn.zhezhi.art"
+echo "或者:"
+
+
+echo "http://$DOMAIN/https://cdn.zhezhi.art"
 
 
 
@@ -605,6 +687,7 @@ pause
 
 
 }
+
 
 
 
@@ -619,7 +702,6 @@ white(){
 while true
 
 do
-
 
 
 header
@@ -637,11 +719,15 @@ echo "当前状态:"
 
 if [ "$FILTER" = "1" ];then
 
+
 echo "开启"
+
 
 else
 
+
 echo "关闭"
+
 
 fi
 
@@ -693,13 +779,16 @@ read -p "选择:" W
 
 
 
+
 case $W in
 
 
 
 1)
 
+
 FILTER="1"
+
 
 ;;
 
@@ -707,7 +796,9 @@ FILTER="1"
 
 2)
 
+
 FILTER="0"
+
 
 ;;
 
@@ -716,7 +807,7 @@ FILTER="0"
 3)
 
 
-read -p "添加域名:" ADD
+read -p "输入域名:" ADD
 
 
 
@@ -749,33 +840,31 @@ read -p "删除域名:" DEL
 NEW=""
 
 
-IFS="|" read -ra LIST <<< "$ALLOW_DOMAIN"
+IFS="|" read -ra ARR <<< "$ALLOW_DOMAIN"
 
 
 
-for i in "${LIST[@]}"
+for d in "${ARR[@]}"
 
 do
 
 
-if [ "$i" != "$DEL" ] && [ -n "$i" ];then
-
+if [ "$d" != "$DEL" ] && [ -n "$d" ];then
 
 
 if [ -z "$NEW" ];then
 
 
-NEW="$i"
+NEW="$d"
 
 
 else
 
 
-NEW="$NEW|$i"
+NEW="$NEW|$d"
 
 
 fi
-
 
 
 fi
@@ -825,8 +914,8 @@ esac
 
 
 
-save
 
+save
 
 
 make_nginx
@@ -840,21 +929,32 @@ pause
 done
 
 
-
 }
+
+
+
+
+
+
 # ==================================================
 # 查看配置
 # ==================================================
 
 show(){
 
+
 header
+
 
 cat "$CONF"
 
+
 pause
 
+
 }
+
+
 
 
 
@@ -864,25 +964,33 @@ pause
 
 reload(){
 
-if openresty -t;then
+
+openresty -t
+
+
+if [ $? = 0 ];then
+
 
 systemctl reload openresty
 
+
 green "重载成功"
+
 
 else
 
+
 red "配置错误"
+
 
 fi
 
 
+
 pause
 
+
 }
-
-
-
 # ==================================================
 # 卸载
 # ==================================================
@@ -901,7 +1009,6 @@ apt remove --purge -y openresty* 2>/dev/null
 rm -rf /usr/local/openresty
 
 
-
 rm -rf "$CONF"
 
 
@@ -914,6 +1021,8 @@ pause
 
 
 }
+
+
 
 
 
@@ -932,17 +1041,24 @@ do
 header
 
 
+
 echo "1.安装反代"
+
 
 echo "2.白名单管理"
 
+
 echo "3.查看配置"
+
 
 echo "4.重载OpenResty"
 
+
 echo "5.卸载"
 
+
 echo "0.退出"
+
 
 
 echo
@@ -958,7 +1074,9 @@ case $M in
 
 1)
 
+
 install
+
 
 ;;
 
@@ -966,7 +1084,9 @@ install
 
 2)
 
+
 white
+
 
 ;;
 
@@ -974,7 +1094,9 @@ white
 
 3)
 
+
 show
+
 
 ;;
 
@@ -982,7 +1104,9 @@ show
 
 4)
 
+
 reload
+
 
 ;;
 
@@ -990,7 +1114,9 @@ reload
 
 5)
 
+
 remove
+
 
 ;;
 
@@ -998,7 +1124,9 @@ remove
 
 0)
 
+
 exit 0
+
 
 ;;
 
@@ -1006,7 +1134,9 @@ exit 0
 
 *)
 
+
 red "错误"
+
 
 ;;
 
@@ -1019,6 +1149,9 @@ done
 
 
 }
+
+
+
 
 
 
