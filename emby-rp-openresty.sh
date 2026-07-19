@@ -2,12 +2,12 @@
 
 # ==================================================
 # Emby Reverse Proxy Manager
-# Version: v3.2 Lua (Fixed)
+# Version: v3.3 Lua (Streaming Fixed)
 #
-# OpenResty + Lua 动态反代（完全修复版）
+# OpenResty + Lua 动态反代（流媒体完美修复版）
 # ==================================================
 
-VER="v3.2"
+VER="v3.3"
 CONF="/etc/emby-rp.conf"
 NGINX="/usr/local/openresty/nginx/conf/nginx.conf"
 LUA="/usr/local/openresty/nginx/conf/lua_init.lua"
@@ -119,7 +119,7 @@ http {
     lua_shared_dict allow_domain 10m;
     init_by_lua_file $LUA;
 
-    # 保持您指定的国外 DNS 变量
+    # 保持您指定的国外通用 DNS
     resolver 1.1.1.1 8.8.8.8 208.67.222.222 valid=300s ipv6=off;
 
     server {
@@ -129,11 +129,15 @@ http {
         # 提前定义 Nginx 变量，供 Lua 动态写入
         set \$upstream "";
         set \$target_host "";
+        set \$target_scheme "";
 
         location / {
             rewrite_by_lua_block {
                 local uri = ngx.var.request_uri
-                local target = uri:sub(2)
+                
+                -- 【核心修复 1】剥离 ? 后面的流媒体播放参数，防止参数污染重写路径导致无法播放
+                local pure_uri = uri:match("^([^?]+)") or uri
+                local target = pure_uri:sub(2)
 
                 if target == "" then
                     ngx.status = 400
@@ -166,34 +170,39 @@ http {
                     end
                 end
 
-                -- 【修复点 1】拆分出正确的域名与路径，重写 URI 规避 Nginx 变量拼接引起的路径重叠
+                -- 【核心修复 2】准确拆分出纯净域名与路径，只用 path 参与重写，让 Nginx 自动追加原始 Query 参数
                 local scheme, host, path = url:match("^(https?://)([^/]+)(.*)")
                 if not path or path == "" then
                     path = "/"
                 end
                 ngx.req.set_uri(path)
 
-                -- 【修复点 2】提取目标站点的真实 Host 赋给变量
+                -- 将提取出来的正确值赋给 Nginx 变量
+                ngx.var.target_scheme = scheme:gsub("://", "")
                 ngx.var.target_host = host
                 ngx.var.upstream = scheme .. host
             }
 
             proxy_pass \$upstream;
 
-            # 【修复点 3】将 Host 修改为目标站点的域名，防止上游服务器断开报 502
+            # 【核心修复 3】将 Host 修改为真实的 Emby 目标域名，防止 502 拒绝连接
             proxy_set_header Host \$target_host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            
+            # 告诉 Emby 真实的传输协议，防止其发送错误的媒体播放清单路径
+            proxy_set_header X-Forwarded-Proto \$target_scheme;
 
             proxy_ssl_server_name on;
             proxy_ssl_verify off;
             proxy_intercept_errors on;
-
-            proxy_set_header X-Real-IP \$remote_addr;
-            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
             proxy_http_version 1.1;
 
+            # 完美放行 WebSocket 协议，保障 Emby 客户端控制台与握手连接
             proxy_set_header Upgrade \$http_upgrade;
             proxy_set_header Connection "upgrade";
 
+            # 流媒体流式大文件传输必备优化选项
             proxy_buffering off;
             proxy_request_buffering off;
             proxy_read_timeout 43200s;
