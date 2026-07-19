@@ -2,14 +2,22 @@
 
 # ==================================================
 # Emby Reverse Proxy Manager
-# Version: v2.0
+# Version: v2.1
+#
+# 基于 v1.9.1
+# 功能:
+# 1. 固定80端口
+# 2. 自动HTTPS解析
+# 3. 支持HTTP/HTTPS目标
+# 4. 支持端口判断
+# 5. 白名单多域名管理
+# 6. OpenResty官方源修复
 # ==================================================
 
 VER="v2.1"
 
 CONF="/etc/emby-rp.conf"
 NGINX="/usr/local/openresty/nginx/conf/nginx.conf"
-SSL="/etc/openresty/ssl"
 
 green(){
 echo -e "\033[32m$1\033[0m"
@@ -42,7 +50,6 @@ source "$CONF"
 }
 
 
-
 save(){
 
 cat > "$CONF" <<EOF
@@ -53,7 +60,6 @@ ALLOW_DOMAIN="$ALLOW_DOMAIN"
 EOF
 
 }
-
 
 
 header(){
@@ -71,53 +77,76 @@ echo
 
 
 # ==================================================
-# 保留原安装方式
+# 安装依赖
 # ==================================================
 
 install_pkg(){
 
 apt update >/dev/null 2>&1
 
-apt install -y curl wget socat >/dev/null 2>&1
+apt install -y \
+curl \
+wget \
+socat \
+gnupg2 \
+ca-certificates \
+software-properties-common \
+lsb-release >/dev/null 2>&1
 
 }
 
 
+
+# ==================================================
+# OpenResty安装
+# ==================================================
 
 install_openresty(){
 
 command -v openresty >/dev/null && return
 
 
+# 删除旧错误源
+rm -f /etc/apt/sources.list.d/openresty.list
+
+
+# 导入官方密钥
 wget -qO- https://openresty.org/package/pubkey.gpg | apt-key add -
 
 
-add-apt-repository \
-"deb http://openresty.org/package/debian $(lsb_release -sc) main"
+# 添加官方源
+echo "deb http://openresty.org/package/debian $(lsb_release -sc) openresty" \
+> /etc/apt/sources.list.d/openresty.list
 
 
+# 更新本地源
 apt update
 
 
+# 安装
 apt install -y openresty
 
 
-systemctl enable openresty
+if ! command -v openresty >/dev/null;then
 
+red "OpenResty安装失败"
+
+return 1
+
+fi
+
+
+systemctl enable openresty
 
 }
 
 
 
 # ==================================================
-# Nginx配置
+# 生成Nginx配置
 # ==================================================
 
 make_nginx(){
-
-
-mkdir -p "$SSL"
-
 
 cat > "$NGINX" <<EOF
 
@@ -143,7 +172,8 @@ http {
     charset utf-8;
 
 
-    resolver 223.5.5.5 119.29.29.29 1.1.1.1 valid=300s ipv6=off;
+    # 国外DNS
+    resolver 1.1.1.1 8.8.8.8 208.67.222.222 valid=300s ipv6=off;
 
 
 
@@ -182,7 +212,7 @@ http {
 
 
 
-            # 不带协议
+            # 不带协议默认HTTPS
 
             if (\$backend_host = "") {
 
@@ -206,8 +236,7 @@ http {
 
 
 
-            # 端口判断
-
+            # 有端口默认HTTP
             if (\$backend_host ~ ":[0-9]+$") {
 
                 set \$backend_scheme "http";
@@ -223,9 +252,9 @@ http {
             }
 
 EOF
-# ==============================
+# ==================================================
 # 白名单过滤
-# ==============================
+# ==================================================
 
 if [ "$FILTER" = "1" ] && [ -n "$ALLOW_DOMAIN" ];then
 
@@ -313,7 +342,7 @@ green "OpenResty配置完成"
 
 
 # ==================================================
-# 安装
+# 安装反代
 # ==================================================
 
 install(){
@@ -328,10 +357,9 @@ install_pkg
 install_openresty
 
 
+if [ $? != 0 ];then
 
-if ! command -v openresty >/dev/null;then
-
-red "OpenResty安装失败"
+red "安装失败"
 
 pause
 
@@ -367,26 +395,19 @@ green "安装完成"
 echo
 
 
-echo "版本:$VER"
-
-
-echo
-
-
-echo "访问方式:"
-
-
-echo "http://$DOMAIN/https://目标地址"
-
-
-echo
-
-
-echo "或"
+echo "访问地址:"
 
 
 echo "http://$DOMAIN/目标地址"
 
+
+echo
+
+
+echo "例如:"
+
+
+echo "http://$DOMAIN/cdn.zhezhi.art"
 
 
 pause
@@ -435,7 +456,7 @@ fi
 echo
 
 
-echo "当前域名:"
+echo "当前列表:"
 
 
 if [ -z "$ALLOW_DOMAIN" ];then
@@ -453,18 +474,21 @@ fi
 echo
 
 
-echo "1 开启"
+echo "1.开启"
 
-echo "2 关闭"
+echo "2.关闭"
 
-echo "3 添加域名"
+echo "3.添加域名"
 
-echo "4 删除域名"
+echo "4.删除域名"
 
-echo "5 清空"
+echo "5.清空列表"
 
-echo "0 返回"
+echo "0.返回"
 
+
+
+echo
 
 
 read -p "选择:" W
@@ -493,7 +517,7 @@ FILTER=0
 
 3)
 
-read -p "添加域名:" ADD
+read -p "输入域名:" ADD
 
 
 if [ -z "$ALLOW_DOMAIN" ];then
@@ -518,23 +542,25 @@ read -p "删除域名:" DEL
 NEW=""
 
 
-IFS="|" read -ra LIST <<< "$ALLOW_DOMAIN"
+IFS="|" read -ra ARR <<< "$ALLOW_DOMAIN"
 
 
-for i in "${LIST[@]}"
+for ITEM in "${ARR[@]}"
 do
 
-if [ "$i" != "$DEL" ] && [ -n "$i" ];then
+if [ "$ITEM" != "$DEL" ] && [ -n "$ITEM" ];then
+
 
 if [ -z "$NEW" ];then
 
-NEW="$i"
+NEW="$ITEM"
 
 else
 
-NEW="$NEW|$i"
+NEW="$NEW|$ITEM"
 
 fi
+
 
 fi
 
@@ -562,7 +588,6 @@ return
 ;;
 
 
-
 *)
 
 red "错误"
@@ -570,6 +595,7 @@ red "错误"
 ;;
 
 esac
+
 
 
 save
@@ -602,7 +628,7 @@ pause
 
 
 # ==================================================
-# 重载
+# 重载配置
 # ==================================================
 
 reload(){
@@ -611,11 +637,11 @@ if openresty -t;then
 
 systemctl reload openresty
 
-green "重载完成"
+green "重载成功"
 
 else
 
-red "配置检测失败"
+red "配置错误"
 
 fi
 
@@ -630,7 +656,6 @@ pause
 # ==================================================
 
 remove(){
-
 
 systemctl stop openresty 2>/dev/null
 
@@ -649,7 +674,6 @@ green "卸载完成"
 
 pause
 
-
 }
 
 
@@ -659,7 +683,6 @@ pause
 # ==================================================
 
 menu(){
-
 
 while true
 
@@ -730,7 +753,7 @@ remove
 
 0)
 
-exit
+exit 0
 
 ;;
 
@@ -745,7 +768,6 @@ esac
 
 
 done
-
 
 }
 
