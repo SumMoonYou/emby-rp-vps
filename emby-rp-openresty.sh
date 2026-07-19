@@ -5,7 +5,7 @@
 # Version: v2.0
 # ==================================================
 
-VER="v2.0"
+VER="v2.1"
 
 CONF="/etc/emby-rp.conf"
 NGINX="/usr/local/openresty/nginx/conf/nginx.conf"
