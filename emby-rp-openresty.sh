@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ==================================================
-# Emby Proxy Lite v1.4
+# Emby Proxy Lite v1.5
 # OpenResty + Lua Dynamic Proxy
-# SSL Webroot
+# Let's Encrypt SSL
 # Universal Linux
 # ==================================================
 
@@ -12,7 +12,7 @@ set -e
 
 APP_NAME="Emby Proxy Lite"
 
-VERSION="1.4"
+VERSION="1.5"
 
 
 BASE_DIR="/etc/emby-proxy"
@@ -22,10 +22,14 @@ CONFIG_FILE="$BASE_DIR/config.conf"
 WHITE_FILE="$BASE_DIR/whitelist.conf"
 
 
-SSL_DIR="/etc/emby-proxy/ssl"
-
+SSL_DIR="$BASE_DIR/ssl"
 
 WEBROOT="/var/www/html"
+
+
+DOMAIN=""
+
+EMAIL=""
 
 
 
@@ -39,16 +43,11 @@ LUA_DIR=""
 
 
 
-DOMAIN=""
-
-
-
 
 
 # ===============================
-# 基础函数
+# 基础
 # ===============================
-
 
 pause(){
 
@@ -61,12 +60,11 @@ read -p "按回车继续..."
 
 
 
-
 check_root(){
 
 if [ "$(id -u)" != "0" ]; then
 
-echo "错误: 请使用root运行"
+echo "请使用root运行"
 
 exit 1
 
@@ -77,9 +75,7 @@ fi
 
 
 
-
 check_system(){
-
 
 if [ ! -f /etc/os-release ]; then
 
@@ -90,15 +86,12 @@ exit 1
 fi
 
 
-
 source /etc/os-release
 
 
 OS=$ID
 
 
-
-echo
 
 echo "系统: $PRETTY_NAME"
 
@@ -108,10 +101,10 @@ echo "系统: $PRETTY_NAME"
 
 
 
-# ===============================
-# OpenResty路径自动检测
-# ===============================
 
+# ===============================
+# OpenResty路径检测
+# ===============================
 
 detect_path(){
 
@@ -157,42 +150,15 @@ LUA_DIR="$NGINX_DIR/lua"
 
 
 
+
 # ===============================
-# 状态检测
+# 状态
 # ===============================
-
-
-check_status(){
-
-
-detect_path
-
-
-
-if command -v openresty >/dev/null 2>&1
-
-then
-
-OPENRESTY=1
-
-else
-
-OPENRESTY=0
-
-fi
-
-
-
-}
-
-
-
-
 
 status(){
 
 
-check_status
+detect_path
 
 
 
@@ -206,7 +172,9 @@ echo "=============================="
 
 
 
-if [ "$OPENRESTY" = "1" ]; then
+if command -v openresty >/dev/null 2>&1
+
+then
 
 echo "OpenResty: 已安装"
 
@@ -215,6 +183,7 @@ else
 echo "OpenResty: 未安装"
 
 fi
+
 
 
 
@@ -232,6 +201,7 @@ fi
 
 
 
+
 if [ -f "$SSL_DIR/fullchain.pem" ]
 
 then
@@ -240,9 +210,10 @@ echo "SSL: 已存在"
 
 else
 
-echo "SSL: 未生成"
+echo "SSL: 不存在"
 
 fi
+
 
 
 
@@ -256,16 +227,17 @@ echo "$NGINX_CONF"
 
 pause
 
+
 }
 
 
 
 
 
-# ===============================
-# 创建目录
-# ===============================
 
+# ===============================
+# 初始化目录
+# ===============================
 
 init_dir(){
 
@@ -276,11 +248,11 @@ detect_path
 
 mkdir -p "$BASE_DIR"
 
+mkdir -p "$SSL_DIR"
+
 mkdir -p "$CONF_DIR"
 
 mkdir -p "$LUA_DIR"
-
-mkdir -p "$SSL_DIR"
 
 mkdir -p "$WEBROOT/.well-known/acme-challenge"
 
@@ -292,10 +264,10 @@ mkdir -p "$WEBROOT/.well-known/acme-challenge"
 
 
 
+
 # ===============================
 # 端口检查
 # ===============================
-
 
 check_port(){
 
@@ -310,7 +282,7 @@ then
 
 echo
 
-echo "注意:80端口已占用"
+echo "80端口已占用"
 
 ss -lntp | grep ":80 "
 
@@ -325,7 +297,7 @@ then
 
 echo
 
-echo "注意:443端口已占用"
+echo "443端口已占用"
 
 ss -lntp | grep ":443 "
 
@@ -341,13 +313,11 @@ fi
 install_openresty(){
 
 
-check_status
+if command -v openresty >/dev/null 2>&1
 
+then
 
-
-if [ "$OPENRESTY" = "1" ]; then
-
-echo "检测到 OpenResty 已安装"
+echo "OpenResty已存在，跳过安装"
 
 return
 
@@ -355,7 +325,7 @@ fi
 
 
 
-echo "开始安装 OpenResty..."
+echo "安装OpenResty..."
 
 
 
@@ -396,6 +366,7 @@ apt update
 apt install -y openresty
 
 
+
 ;;
 
 
@@ -403,39 +374,18 @@ apt install -y openresty
 centos|rocky|almalinux)
 
 
-if command -v dnf >/dev/null 2>&1
-
-then
-
-
-dnf install -y yum-utils curl
-
-
-yum-config-manager \
---add-repo \
-https://openresty.org/package/centos/openresty.repo
-
-
-dnf install -y openresty
-
-
-
-else
-
-
 yum install -y yum-utils curl
 
 
+
 yum-config-manager \
 --add-repo \
 https://openresty.org/package/centos/openresty.repo
+
 
 
 yum install -y openresty
 
-
-
-fi
 
 
 ;;
@@ -444,17 +394,17 @@ fi
 
 *)
 
-echo "暂不支持系统:$OS"
+echo "不支持系统:$OS"
 
 exit 1
 
 ;;
 
-
 esac
 
 
 }
+
 
 
 
@@ -466,24 +416,28 @@ esac
 uninstall(){
 
 
+
 echo
 
-echo "将删除:"
+echo "即将删除："
+
 echo "OpenResty"
-echo "Emby Proxy配置"
+
+echo "Emby Proxy"
+
 echo "SSL证书"
+
 echo "acme.sh"
 
 
-read -p "输入 YES 确认:" OK
+
+read -p "输入YES确认:" OK
 
 
 
-if [ "$OK" != "YES" ]; then
+if [ "$OK" != "YES" ]
 
-echo "取消"
-
-pause
+then
 
 return
 
@@ -492,19 +446,9 @@ fi
 
 
 
-echo "停止服务"
-
-
-
 systemctl stop openresty 2>/dev/null || true
 
-
 systemctl disable openresty 2>/dev/null || true
-
-
-
-
-echo "删除配置"
 
 
 
@@ -514,18 +458,7 @@ rm -rf /usr/local/openresty
 
 rm -rf /etc/openresty
 
-
-
-echo "删除acme"
-
-
-
 rm -rf /root/.acme.sh
-
-
-
-
-echo "卸载软件"
 
 
 
@@ -547,15 +480,13 @@ apt autoremove -y
 centos|rocky|almalinux)
 
 
-dnf remove -y openresty* 2>/dev/null || true
+yum remove -y openresty* 2>/dev/null || true
 
 
 ;;
 
 
-
 esac
-
 
 
 
@@ -568,7 +499,6 @@ echo
 echo "卸载完成"
 
 
-
 pause
 
 
@@ -578,8 +508,10 @@ pause
 
 
 
+
+
 # ===============================
-# 生成基础配置
+# 基础配置
 # ===============================
 
 create_config(){
@@ -590,6 +522,8 @@ cat > "$CONFIG_FILE" <<EOF
 
 DOMAIN=$DOMAIN
 
+EMAIL=$EMAIL
+
 EOF
 
 
@@ -598,11 +532,12 @@ EOF
 
 cat > "$WHITE_FILE" <<EOF
 
-# Emby Proxy 白名单
+# Emby代理白名单
 
-# ENABLE=0 默认不限
+# ENABLE=0 不限制
 
 # ENABLE=1 开启限制
+
 
 
 ENABLE=0
@@ -619,6 +554,11 @@ EOF
 
 }
 
+
+
+
+
+
 # ===============================
 # Lua动态代理
 # ===============================
@@ -629,16 +569,14 @@ create_lua(){
 cat > "$LUA_DIR/proxy.lua" <<'LUA'
 
 
-local cache = ngx.shared.domain_cache
+local cache=ngx.shared.domain_cache
 
 
 
 local function white_enable()
 
 
-local v = cache:get("white_enable")
-
-
+local v=cache:get("enable")
 
 if v then
 
@@ -663,7 +601,7 @@ end
 
 
 
-local enable=false
+local e=false
 
 
 
@@ -676,9 +614,7 @@ line=line:gsub("%s+","")
 
 if line=="ENABLE=1" then
 
-enable=true
-
-break
+e=true
 
 end
 
@@ -692,14 +628,14 @@ f:close()
 
 
 cache:set(
-"white_enable",
-enable and "1" or "0",
+"enable",
+e and "1" or "0",
 60
 )
 
 
 
-return enable
+return e
 
 
 end
@@ -708,16 +644,17 @@ end
 
 
 
-
-local function check_white(host)
-
+local function allow(host)
 
 
-if not white_enable() then
+if not white_enable()
+
+then
 
 return true
 
 end
+
 
 
 
@@ -774,21 +711,20 @@ end
 
 
 
-local uri=ngx.var.uri
+local target=string.sub(
+ngx.var.uri,
+2
+)
 
 
 
-local target=string.sub(uri,2)
+if target==""
 
-
-
-
-if target=="" then
+then
 
 ngx.exit(400)
 
 end
-
 
 
 
@@ -803,7 +739,6 @@ then
 ngx.exit(403)
 
 end
-
 
 
 
@@ -824,14 +759,13 @@ end
 
 
 
-
 local host=m[1]
 
 
 
+if not allow(host)
 
-if not check_white(host) then
-
+then
 
 ngx.status=403
 
@@ -839,9 +773,7 @@ ngx.say("Domain blocked")
 
 ngx.exit(403)
 
-
 end
-
 
 
 
@@ -850,18 +782,15 @@ ngx.var.backend_host=host
 
 
 
+if string.sub(target,1,8)=="https://"
 
-if string.sub(target,1,8)=="https://" then
-
+then
 
 ngx.var.backend_scheme="https"
 
-
 else
 
-
 ngx.var.backend_scheme="http"
-
 
 end
 
@@ -879,16 +808,8 @@ LUA
 
 
 }
-
-
-
-
-
-
-
 # ===============================
 # HTTP临时配置
-# 用于申请证书
 # ===============================
 
 create_nginx_http(){
@@ -924,6 +845,7 @@ server_name $DOMAIN;
 
 
 
+
 location /.well-known/acme-challenge/ {
 
 
@@ -934,10 +856,11 @@ root $WEBROOT;
 
 
 
+
 location / {
 
 
-return 200 "Emby Proxy SSL Setup";
+return 200 "SSL Setup";
 
 
 }
@@ -961,16 +884,14 @@ EOF
 
 
 
-
 # ===============================
-# SSL证书
+# Let's Encrypt SSL
 # ===============================
 
 create_ssl(){
 
 
-
-echo "安装acme.sh"
+echo "安装 acme.sh"
 
 
 
@@ -978,8 +899,32 @@ if [ ! -f /root/.acme.sh/acme.sh ]
 
 then
 
-
 curl https://get.acme.sh | sh
+
+fi
+
+
+
+
+# 解决ZeroSSL IPv6问题
+
+/root/.acme.sh/acme.sh \
+--set-default-ca \
+--server letsencrypt
+
+
+
+
+# 注册邮箱
+
+if [ -n "$EMAIL" ]
+
+then
+
+
+/root/.acme.sh/acme.sh \
+--register-account \
+-m "$EMAIL"
 
 
 fi
@@ -987,15 +932,36 @@ fi
 
 
 
-echo "申请证书..."
+
+echo "申请SSL证书..."
 
 
 
 /root/.acme.sh/acme.sh \
 --issue \
+--force \
 -d "$DOMAIN" \
--w "$WEBROOT"
+-w "$WEBROOT" \
+--server letsencrypt
 
+
+
+
+if [ $? != 0 ]
+
+then
+
+echo "SSL申请失败"
+
+exit 1
+
+fi
+
+
+
+
+
+echo "安装证书..."
 
 
 
@@ -1003,12 +969,20 @@ echo "申请证书..."
 --install-cert \
 -d "$DOMAIN" \
 --key-file "$SSL_DIR/key.pem" \
---fullchain-file "$SSL_DIR/fullchain.pem"
+--fullchain-file "$SSL_DIR/fullchain.pem" \
+--reloadcmd "systemctl reload openresty"
 
 
 
 
 }
+
+
+
+
+
+
+
 # ===============================
 # HTTPS正式配置
 # ===============================
@@ -1016,13 +990,16 @@ echo "申请证书..."
 create_nginx_https(){
 
 
+
 cat > "$NGINX_CONF" <<EOF
+
 
 
 worker_processes auto;
 
 
 worker_rlimit_nofile 65535;
+
 
 
 
@@ -1033,6 +1010,8 @@ worker_connections 65535;
 
 
 }
+
+
 
 
 
@@ -1053,7 +1032,6 @@ include mime.types;
 
 
 
-
 map \$http_upgrade \$connection_upgrade {
 
 
@@ -1069,21 +1047,25 @@ default upgrade;
 
 
 
-
 server {
 
 
+
 listen 80;
+
 
 
 server_name $DOMAIN;
 
 
 
+
 location /.well-known/acme-challenge/ {
 
 
+
 root $WEBROOT;
+
 
 
 }
@@ -1101,8 +1083,6 @@ return 301 https://\$host\$request_uri;
 
 
 }
-
-
 
 
 
@@ -1137,12 +1117,12 @@ ssl_protocols TLSv1.2 TLSv1.3;
 
 
 
+
 location / {
 
 
 
 set \$backend_scheme "";
-
 
 set \$backend_host "";
 
@@ -1156,7 +1136,6 @@ access_by_lua_file $LUA_DIR/proxy.lua;
 
 
 proxy_pass \$backend_scheme://\$backend_host;
-
 
 
 
@@ -1192,13 +1171,18 @@ proxy_set_header Connection \$connection_upgrade;
 
 
 
-
 proxy_set_header Range \$http_range;
 
 
 proxy_set_header If-Range \$http_if_range;
 
 
+
+
+proxy_buffering off;
+
+
+proxy_request_buffering off;
 
 
 
@@ -1209,13 +1193,6 @@ proxy_read_timeout 43200s;
 
 
 proxy_send_timeout 43200s;
-
-
-
-proxy_buffering off;
-
-
-proxy_request_buffering off;
 
 
 
@@ -1236,13 +1213,8 @@ EOF
 
 }
 
-
-
-
-
-
 # ===============================
-# 安装
+# 安装流程
 # ===============================
 
 install(){
@@ -1250,7 +1222,11 @@ install(){
 
 echo
 
-echo "开始安装 $APP_NAME"
+echo "=============================="
+
+echo "安装 $APP_NAME"
+
+echo "=============================="
 
 
 
@@ -1258,8 +1234,9 @@ read -p "请输入代理域名:" DOMAIN
 
 
 
-if [ -z "$DOMAIN" ]; then
+if [ -z "$DOMAIN" ]
 
+then
 
 echo "域名不能为空"
 
@@ -1267,8 +1244,26 @@ pause
 
 return
 
+fi
+
+
+
+read -p "请输入证书邮箱:" EMAIL
+
+
+
+if [ -z "$EMAIL" ]
+
+then
+
+echo "邮箱不能为空"
+
+pause
+
+return
 
 fi
+
 
 
 
@@ -1293,6 +1288,7 @@ create_lua
 
 
 
+echo
 
 echo "生成HTTP验证配置"
 
@@ -1302,13 +1298,26 @@ create_nginx_http
 
 
 
-
 openresty -t
 
 
 
-systemctl enable openresty
+if [ $? != 0 ]
 
+then
+
+echo "配置错误"
+
+pause
+
+return
+
+fi
+
+
+
+
+systemctl enable openresty
 
 
 systemctl restart openresty
@@ -1316,7 +1325,10 @@ systemctl restart openresty
 
 
 
-echo "申请SSL"
+
+echo
+
+echo "申请SSL证书"
 
 
 
@@ -1325,6 +1337,7 @@ create_ssl
 
 
 
+echo
 
 echo "生成HTTPS配置"
 
@@ -1339,6 +1352,22 @@ openresty -t
 
 
 
+
+if [ $? != 0 ]
+
+then
+
+echo "HTTPS配置错误"
+
+pause
+
+return
+
+fi
+
+
+
+
 systemctl reload openresty
 
 
@@ -1346,25 +1375,19 @@ systemctl reload openresty
 
 echo
 
-echo "============================"
+echo "=============================="
 
 echo "安装完成"
 
 echo
 
-echo "访问方式:"
+echo "访问格式："
 
 echo "https://$DOMAIN/https://你的Emby地址"
 
 echo
 
-echo "白名单:"
-
-echo "$WHITE_FILE"
-
-echo
-
-echo "============================"
+echo "=============================="
 
 
 
@@ -1386,14 +1409,11 @@ pause
 repair(){
 
 
-echo "修复配置"
+echo "开始修复"
 
 
 
 init_dir
-
-
-create_config
 
 
 create_lua
@@ -1443,7 +1463,7 @@ pause
 
 
 # ===============================
-# 服务操作
+# 服务控制
 # ===============================
 
 restart(){
@@ -1452,7 +1472,7 @@ restart(){
 systemctl restart openresty
 
 
-echo "重启完成"
+echo "已重启"
 
 
 pause
@@ -1486,14 +1506,13 @@ pause
 
 
 # ===============================
-# 白名单管理
+# 白名单
 # ===============================
 
 whitelist(){
 
 
 nano "$WHITE_FILE"
-
 
 
 systemctl reload openresty
@@ -1517,6 +1536,7 @@ logs(){
 journalctl -u openresty \
 -n 100 \
 --no-pager
+
 
 
 pause
@@ -1547,11 +1567,11 @@ clear
 
 
 
-echo "=============================="
+echo "================================"
 
 echo "$APP_NAME v$VERSION"
 
-echo "=============================="
+echo "================================"
 
 
 
@@ -1559,13 +1579,13 @@ echo
 
 echo "1. 安装"
 
-echo "2. 卸载"
+echo "2. 完全卸载"
 
-echo "3. 状态"
+echo "3. 查看状态"
 
-echo "4. 重启"
+echo "4. 重启服务"
 
-echo "5. Reload"
+echo "5. Reload配置"
 
 echo "6. 查看日志"
 
@@ -1580,13 +1600,13 @@ echo "0. 退出"
 echo
 
 
-
-read -p "选择:" NUM
+read -p "请选择:" NUM
 
 
 
 
 case $NUM in
+
 
 
 1)
@@ -1668,9 +1688,7 @@ esac
 done
 
 
-
 }
-
 
 
 
