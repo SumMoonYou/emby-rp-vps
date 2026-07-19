@@ -1,34 +1,37 @@
 #!/bin/bash
 
-# =================================================
-# Emby Proxy Manager v1.7
-# 简单稳定版
+# ==========================================================
+# Emby Proxy Manager
+# Script Version: v1.8.0
 #
 # 功能:
-# 1. 一键安装 OpenResty
-# 2. 动态URL反代
-# 3. 支持Emby
-# 4. 支持WebSocket
-# 5. 支持HTTP/HTTPS
-# 6. 安装/卸载菜单
-# =================================================
+#  - 动态URL反代
+#  - 支持Emby
+#  - 支持WebSocket
+#  - 支持大文件Range
+#  - 安装/卸载OpenResty
+#  - 80/443端口选择
+#  - 自动证书
+#
+# ==========================================================
 
 
-VERSION="v1.7"
-
-APP="Emby Proxy Manager"
+SCRIPT_NAME="Emby Proxy Manager"
+SCRIPT_VERSION="v1.8.0"
 
 
 CONF="/usr/local/openresty/nginx/conf/nginx.conf"
 
+BACKUP_DIR="/root/emby_proxy_backup"
+
+CONFIG_FILE="/etc/emby_proxy.conf"
+
 SSL_DIR="/etc/openresty/ssl"
 
 
-CONFIG="/etc/emby_proxy.conf"
-
-
-
 pause(){
+
+echo
 
 read -p "按回车继续..."
 
@@ -36,25 +39,38 @@ read -p "按回车继续..."
 
 
 
-msg(){
+ok(){
 
-echo
-echo "================================"
-echo "$1"
-echo "================================"
-echo
+echo -e "\033[32m$1\033[0m"
 
 }
 
 
 
+err(){
+
+echo -e "\033[31m$1\033[0m"
+
+}
+
+
+
+info(){
+
+echo -e "\033[36m$1\033[0m"
+
+}
+
+
+
+
 root_check(){
 
-if [ "$EUID" != "0" ];then
+if [ "$(id -u)" != "0" ];then
 
-echo "请使用root运行"
+err "请使用 root 用户运行"
 
-exit
+exit 1
 
 fi
 
@@ -63,14 +79,55 @@ fi
 
 
 
-install_pkg(){
+
+show_version(){
+
+echo
+
+echo "================================"
+
+echo "$SCRIPT_NAME"
+
+echo "脚本版本: $SCRIPT_VERSION"
+
+echo "================================"
+
+echo
+
+}
 
 
-apt update
 
 
-apt install -y curl wget unzip socat
 
+save_config(){
+
+
+cat > "$CONFIG_FILE" <<EOF
+
+DOMAIN="$DOMAIN"
+
+PORT="$PORT"
+
+EMAIL="$EMAIL"
+
+SCRIPT_VERSION="$SCRIPT_VERSION"
+
+EOF
+
+
+}
+
+
+
+load_config(){
+
+
+if [ -f "$CONFIG_FILE" ];then
+
+source "$CONFIG_FILE"
+
+fi
 
 
 }
@@ -78,14 +135,40 @@ apt install -y curl wget unzip socat
 
 
 
+
+install_env(){
+
+
+info "更新软件源..."
+
+apt update
+
+
+
+apt install -y \
+
+curl \
+
+wget \
+
+socat \
+
+cron \
+
+software-properties-common
+
+
+
+}
+
+
+
 install_openresty(){
 
 
-if command -v openresty >/dev/null
+if command -v openresty >/dev/null 2>&1;then
 
-then
-
-echo "OpenResty 已安装"
+ok "OpenResty 已安装"
 
 return
 
@@ -93,25 +176,22 @@ fi
 
 
 
-echo "安装 OpenResty"
+info "安装 OpenResty..."
 
 
 
-wget -qO - https://openresty.org/package/pubkey.gpg \
-| apt-key add -
-
-
-
-apt-get -y install software-properties-common
+wget -qO - https://openresty.org/package/pubkey.gpg | apt-key add -
 
 
 
 add-apt-repository \
+
 "deb http://openresty.org/package/debian $(lsb_release -sc) main"
 
 
 
 apt update
+
 
 
 apt install -y openresty
@@ -127,226 +207,15 @@ systemctl enable openresty
 
 
 
-save_config(){
 
+uninstall_proxy(){
 
-cat > $CONFIG <<EOF
 
-DOMAIN="$DOMAIN"
+show_version
 
-PORT="$PORT"
 
-EOF
+echo "正在卸载..."
 
-
-}
-
-
-
-load_config(){
-
-
-if [ -f $CONFIG ]
-
-then
-
-source $CONFIG
-
-fi
-
-
-}
-# =================================================
-# 生成Nginx配置
-# =================================================
-
-create_nginx(){
-
-
-msg "生成 OpenResty 配置"
-
-
-cp "$CONF" "$CONF.bak.$(date +%s)"
-
-
-
-cat > "$CONF" <<EOF
-
-worker_processes auto;
-
-
-events {
-
-    worker_connections 4096;
-
-}
-
-
-
-http {
-
-
-    include       mime.types;
-
-    default_type  application/octet-stream;
-
-
-
-    sendfile on;
-
-
-    tcp_nopush on;
-
-
-    keepalive_timeout 65;
-
-
-
-    server {
-
-
-        listen $PORT;
-
-
-
-        server_name $DOMAIN;
-
-
-
-        # ==========================
-        # 动态反代核心
-        # ==========================
-
-        location / {
-
-
-
-            # 提取用户输入地址
-            set \$target "";
-
-            if (\$request_uri ~ "^/https?://([^/]+)(/.*)?") {
-
-                set \$target \$1;
-
-            }
-
-
-
-            # 没有输入地址提示
-
-            if (\$target = "") {
-
-                return 200 "
-
-Emby Proxy $VERSION
-
-使用方法:
-
-https://域名/https://目标地址
-
-例如:
-
-https://proxy.com/https://emby.xxx.com
-
-";
-
-            }
-
-
-
-            proxy_pass https://\$target;
-
-
-
-            proxy_ssl_server_name on;
-
-
-            proxy_ssl_verify off;
-
-
-
-            proxy_set_header Host \$target;
-
-
-
-            proxy_set_header X-Real-IP \$remote_addr;
-
-
-            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-
-
-
-            proxy_http_version 1.1;
-
-
-
-            proxy_set_header Upgrade \$http_upgrade;
-
-
-            proxy_set_header Connection "upgrade";
-
-
-
-            proxy_buffering off;
-
-
-
-            proxy_request_buffering off;
-
-
-
-            proxy_read_timeout 43200s;
-
-
-
-        }
-
-
-
-    }
-
-
-}
-
-
-EOF
-
-
-
-openresty -t
-
-
-if [ $? != 0 ]
-
-then
-
-echo "❌ nginx配置错误"
-
-return
-
-fi
-
-
-
-systemctl restart openresty
-
-
-
-echo
-
-echo "✅ 配置完成"
-
-echo
-
-}
-# =================================================
-# 卸载
-# =================================================
-
-uninstall(){
-
-
-msg "卸载 Emby Proxy"
 
 
 systemctl stop openresty 2>/dev/null
@@ -369,8 +238,7 @@ rm -rf /etc/openresty
 rm -rf /etc/emby_proxy.conf
 
 
-
-rm -f /etc/systemd/system/openresty.service
+rm -rf /root/emby_proxy_backup
 
 
 
@@ -378,18 +246,11 @@ systemctl daemon-reload
 
 
 
-echo
-
-echo "✅ 卸载完成"
-
-echo
-
-echo "如果需要重新安装，请重新运行脚本"
+ok "卸载完成"
 
 
 
 pause
-
 
 }
 
@@ -397,17 +258,18 @@ pause
 
 
 
-
-# =================================================
-# 状态
-# =================================================
-
 status(){
 
 
-echo
+show_version
 
-echo "版本: $VERSION"
+
+if command -v openresty >/dev/null 2>&1
+
+then
+
+
+openresty -v
 
 
 echo
@@ -416,156 +278,17 @@ echo
 systemctl status openresty --no-pager
 
 
-
-pause
-
-
-}
+else
 
 
+echo "OpenResty 未安装"
 
-
-
-
-# =================================================
-# 安装流程
-# =================================================
-
-install(){
-
-
-
-msg "$APP $VERSION 安装"
-
-
-
-install_pkg
-
-
-
-install_openresty
-
-
-
-echo
-
-
-read -p "请输入代理域名: " DOMAIN
-
-
-
-if [ -z "$DOMAIN" ]
-
-then
-
-echo "域名不能为空"
-
-pause
-
-return
 
 fi
 
 
 
-
-
-echo
-
-echo "选择端口"
-
-echo "1. 80 HTTP"
-
-echo "2. 443 HTTPS"
-
-echo "3. 自定义端口"
-
-
-
-read -p "选择:" P
-
-
-
-case $P in
-
-
-1)
-
-PORT=80
-
-;;
-
-
-2)
-
-PORT=443
-
-;;
-
-
-3)
-
-read -p "输入端口:" PORT
-
-;;
-
-
-*)
-
-PORT=80
-
-;;
-
-esac
-
-
-
-
-
-
-save_config
-
-
-
-create_nginx
-
-
-
-
-echo
-
-echo "================================"
-
-echo "安装完成"
-
-echo
-
-echo "版本: $VERSION"
-
-echo "域名: $DOMAIN"
-
-echo "端口: $PORT"
-
-echo
-
-echo "访问格式："
-
-echo "https://$DOMAIN/https://你的Emby地址"
-
-echo
-
-echo "例如："
-
-echo "https://$DOMAIN/https://emby.xxx.com"
-
-echo
-
-echo "================================"
-
-
-
 pause
-
 
 }
 
@@ -575,13 +298,7 @@ pause
 
 
 
-
-# =================================================
-# 菜单
-# =================================================
-
 menu(){
-
 
 
 while true
@@ -592,26 +309,15 @@ do
 clear
 
 
-
-echo "================================"
-
-echo " $APP"
-
-echo " Version $VERSION"
-
-echo "================================"
+show_version
 
 
 
-echo
-
-echo "1. 安装代理"
+echo "1. 安装反代"
 
 echo "2. 卸载"
 
-echo "3. 查看状态"
-
-echo "4. 重载配置"
+echo "3. 状态"
 
 echo "0. 退出"
 
@@ -620,28 +326,25 @@ echo "0. 退出"
 echo
 
 
-read -p "请选择:" N
+read -p "请选择: " NUM
 
 
 
-case $N in
-
+case $NUM in
 
 
 1)
 
-install
+install_proxy
 
 ;;
-
 
 
 2)
 
-uninstall
+uninstall_proxy
 
 ;;
-
 
 
 3)
@@ -651,17 +354,6 @@ status
 ;;
 
 
-
-4)
-
-load_config
-
-create_nginx
-
-;;
-
-
-
 0)
 
 exit
@@ -669,10 +361,9 @@ exit
 ;;
 
 
-
 *)
 
-echo "错误"
+echo "输入错误"
 
 sleep 1
 
@@ -685,31 +376,31 @@ esac
 done
 
 
-
 }
 
+# ==========================================================
+# 生成 OpenResty 配置
+# ==========================================================
 
 
-
-
-# =================================================
-# 启动
-# =================================================
-
-root_check
-
-menu
 create_nginx(){
 
 
-msg "生成 OpenResty 配置"
-
-
-cp "$CONF" "$CONF.bak.$(date +%s)"
+info "生成 nginx 配置..."
 
 
 
-if [ "$PORT" = "443" ]; then
+mkdir -p "$BACKUP_DIR"
+
+
+
+if [ -f "$CONF" ];then
+
+cp "$CONF" "$BACKUP_DIR/nginx.conf.$(date +%s)"
+
+fi
+
+
 
 
 cat > "$CONF" <<EOF
@@ -718,112 +409,66 @@ worker_processes auto;
 
 
 events {
+
     worker_connections 4096;
+
 }
+
 
 
 http {
 
 
-include mime.types;
+    include mime.types;
 
 
-sendfile on;
+    default_type application/octet-stream;
 
 
-server {
 
+    sendfile on;
 
-listen 443 ssl;
 
+    tcp_nopush on;
 
-server_name $DOMAIN;
 
+    keepalive_timeout 65;
 
 
-ssl_certificate $SSL_DIR/fullchain.pem;
 
-ssl_certificate_key $SSL_DIR/key.pem;
+    # 动态域名解析
 
+    resolver 223.5.5.5 119.29.29.29 1.1.1.1 valid=300s ipv6=off;
 
 
-location / {
+    resolver_timeout 5s;
 
 
 
-set \$target "";
+    server {
 
 
 
-if (\$request_uri ~ "^/https?://([^/]+)(/.*)?") {
+EOF
 
-    set \$target \$1;
 
-}
 
+if [ "$PORT" = "443" ];then
 
 
-if (\$target = "") {
+cat >> "$CONF" <<EOF
 
-return 200 "
+        listen 443 ssl;
 
-Emby Proxy $VERSION
 
-使用方法:
+        server_name $DOMAIN;
 
-https://\$host/https://目标地址
 
-";
 
-}
+        ssl_certificate $SSL_DIR/fullchain.pem;
 
+        ssl_certificate_key $SSL_DIR/key.pem;
 
-
-proxy_pass https://\$target;
-
-
-
-proxy_ssl_server_name on;
-
-
-proxy_ssl_verify off;
-
-
-
-proxy_set_header Host \$target;
-
-
-proxy_set_header X-Real-IP \$remote_addr;
-
-
-proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-
-
-proxy_http_version 1.1;
-
-
-proxy_set_header Upgrade \$http_upgrade;
-
-
-proxy_set_header Connection "upgrade";
-
-
-proxy_buffering off;
-
-
-proxy_request_buffering off;
-
-
-proxy_read_timeout 43200s;
-
-
-}
-
-
-}
-
-
-}
 
 EOF
 
@@ -831,122 +476,482 @@ EOF
 else
 
 
-cat > "$CONF" <<EOF
+cat >> "$CONF" <<EOF
 
-worker_processes auto;
-
-
-events {
-
-worker_connections 4096;
-
-}
+        listen $PORT;
 
 
-http {
+        server_name $DOMAIN;
 
-
-include mime.types;
-
-
-server {
-
-
-listen $PORT;
-
-
-server_name $DOMAIN;
-
-
-location / {
-
-
-
-set \$target "";
-
-
-
-if (\$request_uri ~ "^/https?://([^/]+)(/.*)?") {
-
-set \$target \$1;
-
-}
-
-
-
-if (\$target = "") {
-
-return 200 "
-
-Emby Proxy $VERSION
-
-使用方法:
-
-http://\$host/https://目标地址
-
-";
-
-}
-
-
-
-proxy_pass https://\$target;
-
-
-proxy_ssl_server_name on;
-
-
-proxy_ssl_verify off;
-
-
-
-proxy_set_header Host \$target;
-
-
-proxy_http_version 1.1;
-
-
-proxy_set_header Upgrade \$http_upgrade;
-
-
-proxy_set_header Connection "upgrade";
-
-
-proxy_buffering off;
-
-
-proxy_read_timeout 43200s;
-
-
-}
-
-
-}
-
-
-}
 
 EOF
 
 
 fi
+
+
+
+
+cat >> "$CONF" <<'EOF'
+
+
+        location / {
+
+
+
+            # 默认提示
+
+            if ($request_uri !~ "^/https?://") {
+
+                return 200 '
+
+Emby Proxy
+
+使用方法:
+
+https://域名/https://目标地址
+
+
+例如:
+
+https://proxy.com/https://emby.example.com
+
+';
+
+            }
+
+
+
+            # 获取目标域名
+
+            set $backend_host "";
+
+
+            set $backend_uri "/";
+
+
+
+            if ($request_uri ~ "^/https?://([^/]+)(.*)") {
+
+                set $backend_host $1;
+
+                set $backend_uri $2;
+
+            }
+
+
+
+            proxy_pass https://$backend_host$backend_uri;
+
+
+
+            # HTTPS SNI
+
+            proxy_ssl_server_name on;
+
+
+            proxy_ssl_name $backend_host;
+
+
+
+            proxy_ssl_verify off;
+
+
+
+            # 保留目标Host
+
+            proxy_set_header Host $backend_host;
+
+
+
+            proxy_set_header X-Real-IP $remote_addr;
+
+
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+
+
+            # Emby WebSocket
+
+            proxy_http_version 1.1;
+
+
+            proxy_set_header Upgrade $http_upgrade;
+
+
+            proxy_set_header Connection "upgrade";
+
+
+
+            # 流媒体优化
+
+            proxy_buffering off;
+
+
+            proxy_request_buffering off;
+
+
+            proxy_read_timeout 43200s;
+
+
+            proxy_send_timeout 43200s;
+
+
+
+            # Range支持
+
+            proxy_set_header Range $http_range;
+
+
+            proxy_set_header If-Range $http_if_range;
+
+
+
+        }
+
+
+
+    }
+
+
+
+}
+
+
+EOF
 
 
 
 openresty -t
 
-if [ $? = 0 ]; then
 
-systemctl restart openresty
 
-echo "✅ nginx配置成功"
+if [ $? != 0 ];then
 
-else
+err "nginx配置检测失败"
 
-echo "❌ nginx配置错误"
+return 1
 
 fi
 
 
+
+systemctl restart openresty
+
+
+
+ok "nginx启动成功"
+
+
+}
+# ==========================================================
+# acme证书申请
+# ==========================================================
+
+
+install_cert(){
+
+
+if [ "$PORT" != "443" ];then
+
+info "当前端口不是443，跳过证书申请"
+
+return
+
+fi
+
+
+
+mkdir -p "$SSL_DIR"
+
+
+
+if [ -z "$EMAIL" ];then
+
+read -p "请输入证书邮箱: " EMAIL
+
+fi
+
+
+
+info "安装 acme.sh..."
+
+
+
+curl https://get.acme.sh | sh -s email="$EMAIL"
+
+
+
+~/.acme.sh/acme.sh \
+
+--set-default-ca \
+
+--server letsencrypt
+
+
+
+
+info "停止 OpenResty 释放80端口"
+
+
+
+systemctl stop openresty
+
+
+
+~/.acme.sh/acme.sh \
+
+--issue \
+
+-d "$DOMAIN" \
+
+--standalone
+
+
+
+
+if [ $? != 0 ];then
+
+
+err "证书申请失败"
+
+
+systemctl start openresty
+
+
+return 1
+
+
+fi
+
+
+
+
+~/.acme.sh/acme.sh \
+
+--install-cert \
+
+-d "$DOMAIN" \
+
+--key-file "$SSL_DIR/key.pem" \
+
+--fullchain-file "$SSL_DIR/fullchain.pem" \
+
+--reloadcmd "systemctl reload openresty"
+
+
+
+ok "证书安装完成"
+
+
 }
 
+
+
+
+
+# ==========================================================
+# 安装代理
+# ==========================================================
+
+
+install_proxy(){
+
+
+
+show_version
+
+
+
+install_env
+
+
+
+install_openresty
+
+
+
+echo
+
+
+
+read -p "请输入代理域名: " DOMAIN
+
+
+
+if [ -z "$DOMAIN" ];then
+
+err "域名不能为空"
+
+pause
+
+return
+
+fi
+
+
+
+
+echo
+
+echo "请选择端口"
+
+echo "1. 80 HTTP"
+
+echo "2. 443 HTTPS"
+
+echo "3. 自定义"
+
+
+
+read -p "选择: " CHOICE
+
+
+
+case $CHOICE in
+
+
+1)
+
+PORT=80
+
+;;
+
+
+
+2)
+
+PORT=443
+
+;;
+
+
+
+3)
+
+read -p "请输入端口: " PORT
+
+;;
+
+
+*)
+
+PORT=80
+
+;;
+
+esac
+
+
+
+
+if [ "$PORT" = "443" ];then
+
+
+read -p "请输入证书邮箱: " EMAIL
+
+
+install_cert
+
+
+fi
+
+
+
+
+create_nginx
+
+
+
+save_config
+
+
+
+echo
+
+echo "================================"
+
+ok "安装完成"
+
+echo
+
+echo "脚本版本: $SCRIPT_VERSION"
+
+echo "域名: $DOMAIN"
+
+echo "端口: $PORT"
+
+echo
+
+echo "访问方式："
+
+echo "https://$DOMAIN/https://目标地址"
+
+echo
+
+echo "例如："
+
+echo "https://$DOMAIN/https://emby.example.com"
+
+echo
+
+echo "================================"
+
+
+
+pause
+
+
+
+}
+
+
+
+
+
+
+# ==========================================================
+# 更新配置
+# ==========================================================
+
+
+reload_config(){
+
+
+load_config
+
+
+if [ -z "$DOMAIN" ];then
+
+err "没有配置文件"
+
+pause
+
+return
+
+fi
+
+
+
+create_nginx
+
+
+pause
+
+
+}
+
+
+
+
+
+
+# ==========================================================
+# 启动
+# ==========================================================
+
+
+root_check
+
+
+menu
