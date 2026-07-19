@@ -14,7 +14,7 @@
 # 6. OpenResty官方源修复
 # ==================================================
 
-VER="v2.1"
+VER="v2.2"
 
 CONF="/etc/emby-rp.conf"
 NGINX="/usr/local/openresty/nginx/conf/nginx.conf"
