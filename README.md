@@ -64,3 +64,11 @@ OpenResty
 bash -c "$(curl -L https://raw.githubusercontent.com/SumMoonYou/emby-rp-vps/refs/heads/main/emby-rp-openresty.sh)" @ install
 ```
 
+Debian 13使用OpenResty需要先导入密钥
+```
+rm -f /etc/apt/sources.list.d/openresty.list && \
+echo "deb [trusted=yes] http://openresty.org/package/debian bookworm openresty" > /etc/apt/sources.list.d/openresty.list && \
+apt update && \
+apt install -y openresty && \
+openresty -v
+```
