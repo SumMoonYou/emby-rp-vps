@@ -59,6 +59,8 @@ caddy版本
 bash -c "$(curl -L https://raw.githubusercontent.com/SumMoonYou/emby-rp-vps/refs/heads/main/emby-rp-caddy.sh)" @ install
 ```
 
+### 推荐使用下面这个脚本
+
 OpenResty
 ```
 bash -c "$(curl -L https://raw.githubusercontent.com/SumMoonYou/emby-rp-vps/refs/heads/main/emby-rp-openresty.sh)" @ install
