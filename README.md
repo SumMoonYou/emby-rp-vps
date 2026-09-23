@@ -26,7 +26,8 @@
 ## 快速开始
 
 ```bash
-curl -o socks5.sh https://raw.githubusercontent.com/SumMoonYou/emby-rp-vps/main/emby-rp-openresty-new.sh
+bash -c "$(curl -o socks5.sh https://raw.githubusercontent.com/SumMoonYou/emby-rp-vps/main/emby-rp-openresty-new.sh)" @ install
+
 ```
 
 进入菜单后选择 `[1] 安装 / 初始化`，按提示操作。
