@@ -6,15 +6,15 @@
 # 功能概述：
 #   1. 动态反向代理：通过 URL 路径直接指定目标地址
 #      例如访问 https://your.domain/https://target.com/path
-#      Nginx 用 Lua 解析出 target.com，把请求代理过去
+#      Nginx 会用 Lua 解析出 target.com，并把请求代理过去
 #   2. 部署模式二选一：
 #      - 域名模式：可申请 Let's Encrypt 证书，启用 HTTPS
 #      - IP 模式：仅监听 80 端口，不需要域名和证书
 #   3. 中国大陆 IP 访问限制：
 #      - IPv4 基于 china_ip_list 判断，非中国 IP 返回 403
 #      - IPv6 默认全部放行（不参与限制）
-#   4. 域名白名单过滤：只允许反代指定目标域名，防止滥用
-#   5. 首页伪装：开启后，所有错误/根路径访问返回简约博客
+#   4. 域名白名单过滤：只允许反代指定的目标域名，防止被滥用为开放代理
+#   5. 首页伪装：开启后，所有错误/根路径访问均返回一个简约博客首页
 #   6. 自动配置 OpenResty 软件源：
 #      - 按系统代号从新到旧尝试，直到找到可用源
 #      - 官方 GPG 签名失败时自动回退 trusted=yes
@@ -25,106 +25,55 @@
 
 VER="v3.5"
 
-# 强制 UTF-8，避免中文宽度计算异常
-export LANG=C.UTF-8
-export LC_ALL=C.UTF-8
-
 # ==================================================
 # 路径定义
 # ==================================================
-CONF="/etc/emby-rp.conf"                                        # 主配置
-NGINX="/usr/local/openresty/nginx/conf/nginx.conf"              # Nginx 主配置
-LUA="/usr/local/openresty/nginx/conf/lua_init.lua"              # Lua 初始化
-ALLOW_FILE="/usr/local/openresty/nginx/conf/allow_domains.txt"  # 白名单
-CAMO_FILE="/usr/local/openresty/nginx/conf/camo_index.html"     # 伪装首页
-SERVICE="/etc/systemd/system/emby-proxy.service"                # systemd 服务
-LOGROTATE="/etc/logrotate.d/emby-proxy"                         # 日志轮转
-SSL_DIR="/usr/local/openresty/nginx/conf/ssl"                   # SSL 证书目录
-ACME_HOME="/root/.acme.sh"                                      # acme.sh 目录
-ACME_WEBROOT="/var/www/acme"                                    # ACME 验证目录
-CHINA_IP_CONF="/usr/local/openresty/nginx/conf/china_ip.conf"   # 中国 IPv4 段
+CONF="/etc/emby-rp.conf"                                      # 主配置：模式、域名、开关等
+NGINX="/usr/local/openresty/nginx/conf/nginx.conf"            # OpenResty 主配置
+LUA="/usr/local/openresty/nginx/conf/lua_init.lua"            # Lua 初始化：加载白名单到共享字典
+ALLOW_FILE="/usr/local/openresty/nginx/conf/allow_domains.txt" # 白名单独立文件，每行一个域名
+CAMO_FILE="/usr/local/openresty/nginx/conf/camo_index.html"   # 伪装首页（简约博客）
+SERVICE="/etc/systemd/system/emby-proxy.service"              # 自定义 systemd 服务
+LOGROTATE="/etc/logrotate.d/emby-proxy"                       # 日志轮转配置
+SSL_DIR="/usr/local/openresty/nginx/conf/ssl"                 # SSL 证书存放目录
+ACME_HOME="/root/.acme.sh"                                    # acme.sh 安装目录
+ACME_WEBROOT="/var/www/acme"                                  # ACME webroot 验证目录
+CHINA_IP_CONF="/usr/local/openresty/nginx/conf/china_ip.conf" # 中国 IPv4 段（geo 格式）
 CHINA_IP_URL="https://raw.githubusercontent.com/17mon/china_ip_list/master/china_ip_list.txt"
 
 # ==================================================
-# 颜色定义
+# 颜色输出函数
 # ==================================================
-C_CYAN="\033[36m"    # 青色（边框、标题）
-C_GREEN="\033[32m"   # 绿色（成功、菜单键）
-C_RED="\033[31m"     # 红色（错误）
-C_YELLOW="\033[33m"  # 黄色（警告、关闭）
-C_GRAY="\033[90m"    # 灰色（分组）
-C_BOLD="\033[1m"     # 加粗
-C_RESET="\033[0m"    # 重置
-
-green(){  echo -e "${C_GREEN}$1${C_RESET}"; }
-red(){    echo -e "${C_RED}$1${C_RESET}"; }
-yellow(){ echo -e "${C_YELLOW}$1${C_RESET}"; }
-blue(){   echo -e "${C_CYAN}$1${C_RESET}"; }
-
-# 暂停等待回车
-pause(){ echo; read -p "  按回车返回..." _ ; }
-
-# ==================================================
-# 菜单显示函数（关键：框内纯文字，边框单独上色）
-# ==================================================
+green(){ echo -e "\033[32m$1\033[0m"; }    # 成功
+red(){ echo -e "\033[31m$1\033[0m"; }      # 错误
+yellow(){ echo -e "\033[33m$1\033[0m"; }   # 警告
+blue(){ echo -e "\033[36m$1\033[0m"; }     # 提示
+pause(){ echo; read -p "按回车返回..." ; } # 暂停等待
 
 # 顶部标题栏
-# 说明：框内文字不带任何颜色，避免 ANSI 转义外泄
-#       左右空格已手动数好，终端宽度变化也不会歪
 header(){
     clear
-    echo -e "${C_CYAN}╔══════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_CYAN}║${C_RESET}                 动态反代管理面板                 ${C_CYAN}║${C_RESET}"
-    echo -e "${C_CYAN}║${C_RESET}          Dynamic Reverse Proxy  ·  $VER          ${C_CYAN}║${C_RESET}"
-    echo -e "${C_CYAN}╚══════════════════════════════════════════════════╝${C_RESET}"
+    echo -e "\033[36m╔══════════════════════════════════════════╗\033[0m"
+    echo -e "\033[36m║\033[0m        \033[1m动态反代管理面板  $VER\033[0m          \033[36m║\033[0m"
+    echo -e "\033[36m╚══════════════════════════════════════════╝\033[0m"
     echo
 }
 
-# 二级菜单标题（横线分隔，比圆角框更稳）
+# 二级菜单标题
 subheader(){
-    echo -e "${C_CYAN}────────────────────────────────────────────────────${C_RESET}"
-    echo -e "  ${C_BOLD}$1${C_RESET}"
-    echo -e "${C_CYAN}────────────────────────────────────────────────────${C_RESET}"
-    echo
+    echo -e "\033[36m──────────────────────────────────────────\033[0m"
+    echo -e "  \033[1m$1\033[0m"
+    echo -e "\033[36m──────────────────────────────────────────\033[0m"
 }
 
-# 兼容旧调用（子菜单尾部原本用 subfooter）
-subfooter(){ :; }
-
-# 分组标签
-group(){ printf "  ${C_GRAY}▸ %s${C_RESET}\n" "$1"; }
-
-# 菜单项：[键] 说明
-item(){ printf "    ${C_GREEN}[%s]${C_RESET}  %s\n" "$1" "$2"; }
-
-# 状态徽章
-badge_on(){  printf "${C_GREEN}[ ON  ]${C_RESET}"; }
-badge_off(){ printf "${C_YELLOW}[ OFF ]${C_RESET}"; }
-
-# 状态行：标签 + 值，标签固定 12 列
-# 用 printf 的 %-12s 时中文会歪，所以手动算
-stat_line(){
-    local label="$1" value="$2"
-    local lw=0 i c
-    # 计算标签显示宽度：中文算 2
-    for (( i=0; i<${#label}; i++ )); do
-        c="${label:i:1}"
-        if printf '%s' "$c" | LC_ALL=C grep -qP '[\x80-\xFF]' 2>/dev/null; then
-            lw=$(( lw + 2 ))
-        else
-            lw=$(( lw + 1 ))
-        fi
-    done
-    local pad=$(( 14 - lw ))
-    (( pad < 0 )) && pad=0
-    printf "  ${C_CYAN}%s${C_RESET}%*s %s\n" "$label" "$pad" "" "$value"
-}
+# 状态显示：开启/关闭
+status_on(){ green "已开启"; }
+status_off(){ yellow "已关闭"; }
 
 # ==================================================
-# 服务控制
+# 服务控制辅助
 # ==================================================
-
-# 重启服务：先停系统自带 openresty，避免冲突
+# 重启服务：先停系统自带 openresty，避免和 emby-proxy 冲突
 svc_restart(){
     systemctl stop openresty 2>/dev/null
     systemctl disable openresty 2>/dev/null
@@ -135,10 +84,8 @@ svc_restart(){
         /usr/local/openresty/bin/openresty
     }
 }
-
 # 平滑重载
 svc_reload(){ systemctl reload emby-proxy 2>/dev/null || openresty -s reload 2>/dev/null || true; }
-
 # 停止服务
 svc_stop(){
     systemctl stop emby-proxy 2>/dev/null
@@ -150,8 +97,7 @@ svc_stop(){
 # ==================================================
 # 配置读写
 # ==================================================
-
-# 初始化配置：文件不存在则创建默认值；旧版缺字段自动补
+# 初始化配置：文件不存在则创建默认值
 init(){
     if [ ! -f "$CONF" ]; then
         cat > "$CONF" <<EOF
@@ -165,7 +111,7 @@ CAMO="0"
 EOF
     fi
     source "$CONF"
-    # 兼容旧版本配置
+    # 兼容旧版本配置：缺失字段补默认值
     : "${MODE:=domain}"
     : "${DOMAIN:=}"
     : "${HTTPS:=0}"
@@ -189,53 +135,48 @@ EOF
 }
 
 # ==================================================
-# 中国 IP 库
+# 中国 IP 库管理
 # ==================================================
-
-# 下载并转换为 geo 模块可用的格式（CIDR 1;）
+# 下载并转换为 geo 模块可用的格式（每行：CIDR 1;）
 update_china_ip(){
-    blue "  ℹ️ 更新中国IP库..."
+    blue "ℹ️ 更新中国IP库..."
     mkdir -p "$(dirname "$CHINA_IP_CONF")"
     local tmp="/tmp/china_ip_list.txt"
     if ! curl -fsSL --connect-timeout 15 --max-time 60 "$CHINA_IP_URL" -o "$tmp"; then
-        red "  ❌ 下载失败"
+        red "❌ 下载失败"
         return 1
     fi
-    # 过滤注释和空行，转成 geo 格式
     awk '!/^[[:space:]]*#/ && NF>=1 {print $1 " 1;"}' "$tmp" > "$CHINA_IP_CONF"
     rm -f "$tmp"
     if [ ! -s "$CHINA_IP_CONF" ]; then
-        red "  ❌ IP库为空，请检查源"
+        red "❌ IP库为空，请检查源"
         return 1
     fi
-    green "  ✅ 更新完成（$(wc -l < "$CHINA_IP_CONF") 条，仅 IPv4）"
+    green "✅ 更新完成（$(wc -l < "$CHINA_IP_CONF") 条，仅 IPv4）"
 }
 
 # ==================================================
 # 依赖安装
 # ==================================================
-
-# 安装基础依赖
 install_pkg(){
-    blue "  ℹ️ 安装基础依赖..."
+    blue "ℹ️ 安装基础依赖..."
     apt update >/dev/null 2>&1
     apt install -y curl wget socat gnupg2 ca-certificates \
         software-properties-common lsb-release apt-transport-https cron logrotate >/dev/null 2>&1
-    green "  ✅ 依赖安装完成"
+    green "✅ 依赖安装完成"
 }
 
-# 安装 OpenResty：多候选源尝试；官方签名失败回退 trusted=yes
+# 安装 OpenResty：优先官方签名源，失败回退 trusted=yes；系统代号不支持时向前回退
 install_openresty(){
     if command -v openresty >/dev/null 2>&1; then
-        green "  ✅ OpenResty 已安装"
+        green "✅ OpenResty 已安装"
         return 0
     fi
-    blue "  ℹ️ 开始安装 OpenResty..."
+    blue "ℹ️ 开始安装 OpenResty..."
 
     local CODENAME
     CODENAME=$(lsb_release -sc)
 
-    # 按系统代号生成候选列表，从新到旧
     local CANDIDATES
     case "$CODENAME" in
         trixie)   CANDIDATES="trixie bookworm bullseye" ;;
@@ -247,13 +188,13 @@ install_openresty(){
         *)        CANDIDATES="$CODENAME bookworm jammy" ;;
     esac
 
-    local chosen="" code
+    local chosen=""
+    local code
     for code in $CANDIDATES; do
-        blue "  ℹ️ 尝试源代号: $code"
+        blue "ℹ️ 尝试源代号: $code"
         rm -f /etc/apt/sources.list.d/openresty.list
         rm -f /usr/share/keyrings/openresty.gpg
 
-        # 先尝试官方签名源
         local use_official=0
         if wget -qO- https://openresty.org/package/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/openresty.gpg 2>/dev/null; then
             echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/debian $code openresty" \
@@ -263,7 +204,6 @@ install_openresty(){
             fi
         fi
 
-        # 签名失败回退 trusted=yes
         if [ "$use_official" = "0" ]; then
             rm -f /usr/share/keyrings/openresty.gpg
             echo "deb [trusted=yes] http://openresty.org/package/debian $code openresty" \
@@ -271,116 +211,107 @@ install_openresty(){
             apt update >/dev/null 2>&1
         fi
 
-        # 检查该源是否有候选版本
         if apt-cache policy openresty 2>/dev/null | grep -q "Candidate:"; then
             chosen="$code"
-            green "  ✅ 使用源代号: $code"
+            green "✅ 使用源代号: $code"
             break
         else
-            yellow "  ⚠️ $code 源无 openresty 包，尝试下一个"
+            yellow "⚠️ $code 源无 openresty 包，尝试下一个"
         fi
     done
 
     if [ -z "$chosen" ]; then
-        red "  ❌ 所有候选源均不可用，请检查网络或手动配置源"
+        red "❌ 所有候选源均不可用，请检查网络或手动配置源"
         return 1
     fi
 
-    blue "  ℹ️ 下载并安装 openresty..."
+    blue "ℹ️ 下载并安装 openresty..."
     if ! apt install -y openresty; then
-        red "  ❌ apt install 失败，请检查上方报错"
+        red "❌ apt install 失败，请检查上方报错"
         return 1
     fi
 
     if ! command -v openresty >/dev/null 2>&1; then
-        red "  ❌ 安装后仍找不到 openresty 命令"
+        red "❌ 安装后仍找不到 openresty 命令"
         return 1
     fi
     systemctl enable openresty >/dev/null 2>&1
-    green "  ✅ OpenResty 安装完成"
+    green "✅ OpenResty 安装完成"
 }
 
-# 安装 acme.sh
+# 安装 acme.sh（证书申请工具）
 install_acme(){
     if [ -f "$ACME_HOME/acme.sh" ]; then
-        green "  ✅ acme.sh 已安装"
+        green "✅ acme.sh 已安装"
         return 0
     fi
     if [ -z "$DOMAIN" ]; then
-        red "  ❌ 请先设置域名再安装 acme.sh"
+        red "❌ 请先设置域名再安装 acme.sh"
         return 1
     fi
-    blue "  ℹ️ 安装 acme.sh..."
+    blue "ℹ️ 安装 acme.sh..."
     curl -s https://get.acme.sh | sh -s email=admin@"$DOMAIN" >/dev/null 2>&1
     export PATH="$ACME_HOME:$PATH"
     [ -f /root/.bashrc ] && source /root/.bashrc 2>/dev/null
     if [ ! -f "$ACME_HOME/acme.sh" ]; then
-        red "  ❌ 安装失败"
+        red "❌ 安装失败"
         return 1
     fi
     "$ACME_HOME/acme.sh" --set-default-ca --server letsencrypt >/dev/null 2>&1
-    green "  ✅ acme.sh 安装完成"
+    green "✅ acme.sh 安装完成"
 }
 
 # ==================================================
 # 证书相关
 # ==================================================
-
-# 申请并安装证书：先 webroot，失败再 standalone
 issue_cert(){
     local domain="$1"
     mkdir -p "$SSL_DIR" "$ACME_WEBROOT"
-    blue "  ℹ️ 申请证书 $domain ..."
+    blue "ℹ️ 申请证书 $domain ..."
     export PATH="$ACME_HOME:$PATH"
 
-    # 备份当前 nginx.conf
     local bak=""
     if [ -f "$NGINX" ]; then
         bak="${NGINX}.bak.$$"
         cp -a "$NGINX" "$bak"
     fi
 
-    # 写入临时 ACME 验证配置
     write_acme_temp_nginx "$domain"
     svc_restart
     sleep 1
 
-    # 先尝试 webroot
     "$ACME_HOME/acme.sh" --issue -d "$domain" -w "$ACME_WEBROOT" --keylength 2048 --force >/dev/null 2>&1
     local ok=$?
     if [ $ok -ne 0 ]; then
-        yellow "  ⚠️ webroot 失败，尝试 standalone"
+        yellow "⚠️ webroot 失败，尝试 standalone"
         svc_stop
         fuser -k 80/tcp 2>/dev/null || true
         "$ACME_HOME/acme.sh" --issue -d "$domain" --standalone --keylength 2048 --force >/dev/null 2>&1
         ok=$?
     fi
 
-    # 恢复原 nginx.conf
     if [ -n "$bak" ] && [ -f "$bak" ]; then
         mv -f "$bak" "$NGINX"
     fi
 
     if [ $ok -ne 0 ]; then
-        red "  ❌ 证书申请失败"
+        red "❌ 证书申请失败"
         return 1
     fi
 
-    # 安装证书到指定路径
     "$ACME_HOME/acme.sh" --install-cert -d "$domain" \
         --key-file       "$SSL_DIR/${domain}.key" \
         --fullchain-file "$SSL_DIR/${domain}.fullchain.pem" \
         --reloadcmd      "systemctl reload emby-proxy 2>/dev/null || openresty -s reload 2>/dev/null || true" >/dev/null 2>&1
     if [ $? -ne 0 ]; then
-        red "  ❌ 证书安装失败"
+        red "❌ 证书安装失败"
         return 1
     fi
     chmod 600 "$SSL_DIR/${domain}.key"
     chmod 644 "$SSL_DIR/${domain}.fullchain.pem"
-    green "  ✅ 证书申请并安装成功"
+    green "✅ 证书申请并安装成功"
 }
 
-# 临时 nginx 配置：仅用于 ACME 验证
 write_acme_temp_nginx(){
     local domain="$1"
     mkdir -p "$ACME_WEBROOT"
@@ -412,7 +343,7 @@ EOF
 write_lua(){
     mkdir -p "$(dirname "$LUA")"
 
-    # 写白名单文件
+    # ---------- 白名单文件 ----------
     : > "$ALLOW_FILE"
     if [ -n "$ALLOW_DOMAIN" ]; then
         IFS="|" read -ra ARR <<< "$ALLOW_DOMAIN"
@@ -421,7 +352,7 @@ write_lua(){
         done
     fi
 
-    # 生成伪装首页（简约博客）
+    # ---------- 伪装首页（简约博客） ----------
     cat > "$CAMO_FILE" <<'HTML'
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -487,8 +418,9 @@ write_lua(){
 </html>
 HTML
 
-    # 生成 Lua 初始化脚本：配置 + 伪装页 + 白名单写入共享字典
+    # ---------- Lua 初始化脚本 ----------
     cat > "$LUA" <<EOF
+-- 从共享字典读取配置
 local dict = ngx.shared.allow_domain
 dict:set("filter",     "$FILTER")
 dict:set("camo",       "$CAMO")
@@ -501,7 +433,7 @@ if cf then
     cf:close()
 end
 
--- 白名单从独立文件读取
+-- 白名单从独立文件读取，避免字符串注入
 local f = io.open("$ALLOW_FILE", "r")
 if f then
     local lines = {}
@@ -518,8 +450,6 @@ EOF
 # ==================================================
 # systemd / logrotate
 # ==================================================
-
-# 创建 systemd 服务：用 emby-proxy 管理 OpenResty
 make_systemd(){
     cat > "$SERVICE" <<EOF
 [Unit]
@@ -545,7 +475,6 @@ EOF
     systemctl enable emby-proxy.service >/dev/null 2>&1
 }
 
-# 配置日志轮转：保留 7 天，压缩旧日志
 make_logrotate(){
     cat > "$LOGROTATE" <<EOF
 /usr/local/openresty/nginx/logs/*.log {
@@ -561,14 +490,12 @@ make_logrotate(){
     endscript
 }
 EOF
-    green "  ✅ logrotate 已配置（保留 7 天）"
+    green "✅ logrotate 已配置（保留 7 天）"
 }
 
 # ==================================================
 # 生成反代配置
 # ==================================================
-
-# 生成 location / 块
 gen_proxy_location(){
     cat > /tmp/rp_location.$$ <<'LOC'
     location / {
@@ -576,7 +503,7 @@ gen_proxy_location(){
         set $target_host "";
         set $target_scheme "";
         rewrite_by_lua_block {
-            -- 统一错误渲染：按伪装开关决定返回 HTML 还是纯文本
+            -- 统一的错误/提示渲染：按伪装开关决定返回 HTML 还是纯文本
             local function render_error(status, msg)
                 local dict = ngx.shared.allow_domain
                 ngx.status = status
@@ -608,7 +535,7 @@ gen_proxy_location(){
                 return render_error(400, "❌ 400 缺少目标地址")
             end
 
-            -- 无协议默认补 https://
+            -- 无协议时默认补 https://
             local url = target
             if not url:match("^https?://") then
                 url = "https://" .. url
@@ -654,19 +581,16 @@ gen_proxy_location(){
             ngx.var.upstream = scheme .. host
         }
 
-        # 代理到动态 upstream
         proxy_pass $upstream;
         proxy_set_header Host $target_host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $target_scheme;
 
-        # 上游 HTTPS 支持
         proxy_ssl_server_name on;
         proxy_ssl_name $target_host;
         proxy_ssl_verify off;
 
-        # WebSocket / Range 支持
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -674,7 +598,6 @@ gen_proxy_location(){
         proxy_set_header If-Range $http_if_range;
         proxy_force_ranges on;
 
-        # 流媒体优化
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_max_temp_file_size 0;
@@ -682,7 +605,6 @@ gen_proxy_location(){
         proxy_send_timeout 86400s;
     }
 
-    # 错误页面
     error_page 502 = @error502;
     error_page 504 = @error504;
     location @error502 {
@@ -698,16 +620,13 @@ LOC
     rm -f /tmp/rp_location.$$
 }
 
-# 生成完整 nginx.conf
 make_nginx(){
     write_lua
 
-    # IP 库不存在时自动下载
     if [ "$CHINA_ONLY" = "1" ] && [ ! -f "$CHINA_IP_CONF" ]; then
         update_china_ip || true
     fi
 
-    # server_name：IP 模式用 _ 匹配所有
     local sname="$DOMAIN"
     [ "$MODE" = "ip" ] && sname="_"
 
@@ -723,11 +642,9 @@ make_nginx(){
 "
     fi
 
-    # 先生成 location 块到临时文件
     gen_proxy_location > /tmp/rp_loc.txt
 
     if [ "$MODE" = "domain" ] && [ "$HTTPS" = "1" ]; then
-        # 域名 + HTTPS 模式
         {
             cat <<EOF
 worker_processes auto;
@@ -746,7 +663,6 @@ $geo_block
     keepalive_timeout 65;
     client_max_body_size 0;
 
-    # HTTP：ACME 验证 + 跳转 HTTPS
     server {
         listen 80;
         listen [::]:80;
@@ -760,7 +676,6 @@ $geo_block
         }
     }
 
-    # HTTPS 主服务
     server {
         listen 443 ssl;
         listen [::]:443 ssl;
@@ -783,7 +698,6 @@ EOF
 EOF
         } > "$NGINX"
     else
-        # IP 模式 或 域名 + HTTP 模式
         {
             cat <<EOF
 worker_processes auto;
@@ -816,34 +730,32 @@ EOF
     fi
     rm -f /tmp/rp_loc.txt
 
-    # 语法检查
     if ! openresty -t 2>/tmp/rp_test_err.txt; then
-        red "  ❌ 配置检测失败："
+        red "❌ 配置检测失败："
         cat /tmp/rp_test_err.txt
         rm -f /tmp/rp_test_err.txt
         return 1
     fi
     rm -f /tmp/rp_test_err.txt
     svc_restart
-    green "  ✅ 配置已加载"
-    blue "  ℹ️ nginx.conf 大小: $(wc -c < "$NGINX") 字节"
+    green "✅ 配置已加载"
+    blue "ℹ️ nginx.conf 大小: $(wc -c < "$NGINX") 字节"
 }
 
 # ==================================================
-# 功能：安装 / 初始化
+# 功能菜单
 # ==================================================
 install(){
     header
     subheader "安装 / 初始化"
-    echo
 
     install_pkg
     install_openresty || { pause; return; }
 
     echo
-    group "部署模式"
-    item 1 "域名（可申请 HTTPS 证书）"
-    item 2 "IP  （仅 HTTP，不需要证书）"
+    echo -e "  \033[1m请选择部署模式：\033[0m"
+    echo -e "    \033[32m[1]\033[0m 域名（可申请 HTTPS 证书）"
+    echo -e "    \033[32m[2]\033[0m IP  （仅 HTTP，不需要证书）"
     echo
     read -p "  选择 [1/2]: " MODE_CHOICE
     case "$MODE_CHOICE" in
@@ -856,7 +768,7 @@ install(){
             MODE="domain"
             read -p "  绑定域名: " DOMAIN
             if [ -z "$DOMAIN" ]; then
-                red "  ❌ 域名不能为空"
+                red "❌ 域名不能为空"
                 pause
                 return
             fi
@@ -871,16 +783,14 @@ install(){
     CAMO="0"
     save
 
-    # 更新中国 IP 库
     if [ "$CHINA_ONLY" = "1" ]; then
-        update_china_ip || yellow "  ⚠️ IP 库更新失败，可稍后在菜单 [3] 重试"
+        update_china_ip || yellow "⚠️ IP 库更新失败，可稍后在菜单 [3] 重试"
     fi
 
-    # HTTPS 模式：安装 acme.sh 并申请证书
     if [ "$MODE" = "domain" ] && [ "$HTTPS" = "1" ]; then
-        install_acme || { red "  ❌ acme 安装失败，回退 HTTP"; HTTPS="0"; save; }
+        install_acme || { red "❌ acme 安装失败，回退 HTTP"; HTTPS="0"; save; }
         if [ "$HTTPS" = "1" ]; then
-            issue_cert "$DOMAIN" || { red "  ❌ 证书失败，回退 HTTP"; HTTPS="0"; save; }
+            issue_cert "$DOMAIN" || { red "❌ 证书失败，回退 HTTP"; HTTPS="0"; save; }
         fi
     fi
 
@@ -890,29 +800,25 @@ install(){
     svc_restart
 
     echo
-    green "  ✅ 部署成功"
-    subheader "访问信息"
+    green "✅ 部署成功"
+    echo -e "  \033[36m──────────────────────────────────────────\033[0m"
     if [ "$MODE" = "ip" ]; then
-        stat_line "访问格式" "http://$(hostname -I | awk '{print $1}')/目标地址"
+        LOCAL_IP=$(hostname -I | awk '{print $1}')
+        echo -e "  访问格式: \033[1mhttp://$LOCAL_IP/目标地址\033[0m"
     elif [ "$HTTPS" = "1" ]; then
-        stat_line "访问格式" "https://$DOMAIN/目标地址"
+        echo -e "  访问格式: \033[1mhttps://$DOMAIN/目标地址\033[0m"
     else
-        stat_line "访问格式" "http://$DOMAIN/目标地址"
+        echo -e "  访问格式: \033[1mhttp://$DOMAIN/目标地址\033[0m"
     fi
-    stat_line "管理服务" "systemctl {start|stop|restart} emby-proxy"
     pause
 }
 
-# ==================================================
-# 功能：更新证书
-# ==================================================
 renew_cert(){
     header
     subheader "更新证书"
-    echo
 
     if [ "$MODE" != "domain" ] || [ -z "$DOMAIN" ]; then
-        red "  ❌ 当前不是域名模式，无法申请证书"
+        red "❌ 当前不是域名模式，无法申请证书"
         pause
         return
     fi
@@ -921,70 +827,54 @@ renew_cert(){
         save
     fi
     install_acme || { pause; return; }
-    issue_cert "$DOMAIN" && make_nginx && green "  ✅ 证书已更新" || red "  ❌ 更新失败"
+    issue_cert "$DOMAIN" && make_nginx && green "✅ 证书已更新" || red "❌ 更新失败"
     pause
 }
 
-# ==================================================
-# 功能：中国 IP 限制
-# ==================================================
 china_ip_menu(){
     while true; do
         header
         subheader "中国大陆 IP 限制"
 
-        stat_line "状态"   "$([ "$CHINA_ONLY" = "1" ] && badge_on || badge_off)"
-        [ -f "$CHINA_IP_CONF" ] && stat_line "IPv4库" "$(wc -l < "$CHINA_IP_CONF") 条"
-        stat_line "IPv6"   "默认放行"
+        echo -n "  状态:   "
+        [ "$CHINA_ONLY" = "1" ] && status_on || status_off
+        [ -f "$CHINA_IP_CONF" ] && echo "  IPv4库: $(wc -l < "$CHINA_IP_CONF") 条"
+        echo "  IPv6:   默认放行"
         echo
-
-        group "开关"
-        item 1 "开启限制"
-        item 2 "关闭限制"
+        echo -e "    \033[32m[1]\033[0m 开启限制"
+        echo -e "    \033[32m[2]\033[0m 关闭限制"
+        echo -e "    \033[32m[3]\033[0m 更新 IP 库"
+        echo -e "    \033[32m[0]\033[0m 返回"
         echo
-        group "维护"
-        item 3 "更新 IP 库"
-        echo
-        item 0 "返回"
-        echo
-
         read -p "  选择: " C
         case $C in
             1) CHINA_ONLY="1"; [ ! -f "$CHINA_IP_CONF" ] && update_china_ip ;;
             2) CHINA_ONLY="0" ;;
             3) update_china_ip ;;
             0) save; make_nginx; return ;;
-            *) red "  ❌ 输入错误" ;;
+            *) red "❌ 输入错误" ;;
         esac
         save
         make_nginx
     done
 }
 
-# ==================================================
-# 功能：域名白名单
-# ==================================================
 white(){
     while true; do
         header
         subheader "域名白名单"
 
-        stat_line "状态"   "$([ "$FILTER" = "1" ] && badge_on || badge_off)"
-        stat_line "列表"   "${ALLOW_DOMAIN:-无}"
+        echo -n "  状态:   "
+        [ "$FILTER" = "1" ] && status_on || status_off
+        echo "  列表:   ${ALLOW_DOMAIN:-无}"
         echo
-
-        group "开关"
-        item 1 "开启限制"
-        item 2 "关闭限制"
+        echo -e "    \033[32m[1]\033[0m 开启限制"
+        echo -e "    \033[32m[2]\033[0m 关闭限制"
+        echo -e "    \033[32m[3]\033[0m 添加域名"
+        echo -e "    \033[32m[4]\033[0m 删除域名"
+        echo -e "    \033[32m[5]\033[0m 清空域名"
+        echo -e "    \033[32m[0]\033[0m 返回"
         echo
-        group "编辑"
-        item 3 "添加域名"
-        item 4 "删除域名"
-        item 5 "清空域名"
-        echo
-        item 0 "返回"
-        echo
-
         read -p "  选择: " W
         case $W in
             1) FILTER="1" ;;
@@ -1008,35 +898,29 @@ white(){
                 ;;
             5) ALLOW_DOMAIN="" ;;
             0) save; make_nginx; return ;;
-            *) red "  ❌ 输入错误" ;;
+            *) red "❌ 输入错误" ;;
         esac
         save
         make_nginx
     done
 }
 
-# ==================================================
-# 功能：首页伪装
-# ==================================================
+# 首页伪装管理
 camo_menu(){
     while true; do
         header
         subheader "首页伪装"
 
-        stat_line "状态"   "$([ "$CAMO" = "1" ] && badge_on || badge_off)"
-        stat_line "说明"   "开启后错误页返回简约博客"
+        echo -n "  状态:   "
+        [ "$CAMO" = "1" ] && status_on || status_off
+        echo "  说明:   开启后，所有错误/根路径访问均返回简约博客首页"
+        echo "          关闭后，恢复纯文本提示"
         echo
-
-        group "开关"
-        item 1 "开启伪装"
-        item 2 "关闭伪装"
+        echo -e "    \033[32m[1]\033[0m 开启伪装"
+        echo -e "    \033[32m[2]\033[0m 关闭伪装"
+        echo -e "    \033[32m[3]\033[0m 预览伪装页"
+        echo -e "    \033[32m[0]\033[0m 返回"
         echo
-        group "查看"
-        item 3 "预览伪装页"
-        echo
-        item 0 "返回"
-        echo
-
         read -p "  选择: " C
         case $C in
             1) CAMO="1"; save; make_nginx ;;
@@ -1044,82 +928,64 @@ camo_menu(){
             3)
                 if [ -f "$CAMO_FILE" ]; then
                     echo
-                    blue "  ℹ️ 伪装页路径: $CAMO_FILE"
-                    echo "     大小: $(wc -c < "$CAMO_FILE") 字节"
+                    blue "ℹ️ 伪装页已生成于: $CAMO_FILE"
+                    echo "  大小: $(wc -c < "$CAMO_FILE") 字节"
                 else
-                    yellow "  ⚠️ 尚未生成，请先开启一次伪装"
+                    yellow "⚠️ 尚未生成，请先开启一次伪装"
                 fi
                 pause
                 ;;
             0) return ;;
-            *) red "  ❌ 输入错误" ;;
+            *) red "❌ 输入错误" ;;
         esac
     done
 }
 
-# ==================================================
-# 功能：查看配置
-# ==================================================
 show(){
     header
     subheader "当前配置"
 
-    if [ "$MODE" = "ip" ]; then
-        stat_line "模式" "$(yellow "IP")"
-    else
-        stat_line "模式" "$(green "域名")"
-    fi
-
+    echo -e "  模式:     $([ "$MODE" = "ip" ] && echo "IP" || echo "域名")"
     if [ "$MODE" = "domain" ]; then
-        stat_line "域名"  "$DOMAIN"
-        stat_line "HTTPS" "$([ "$HTTPS" = "1" ] && badge_on || badge_off)"
+        echo -e "  域名:     $DOMAIN"
+        echo -n "  HTTPS:    "; [ "$HTTPS" = "1" ] && status_on || status_off
     else
-        stat_line "本机IP" "$(hostname -I | awk '{print $1}')"
+        LOCAL_IP=$(hostname -I | awk '{print $1}')
+        echo -e "  本机IP:   $LOCAL_IP"
     fi
-
-    stat_line "中国IP"     "$([ "$CHINA_ONLY" = "1" ] && badge_on || badge_off)"
-    stat_line "首页伪装"   "$([ "$CAMO" = "1" ] && badge_on || badge_off)"
-    stat_line "白名单"     "$([ "$FILTER" = "1" ] && badge_on || badge_off)"
-    stat_line "白名单列表" "${ALLOW_DOMAIN:-无}"
+    echo -n "  中国IP:   "; [ "$CHINA_ONLY" = "1" ] && green "已开启（IPv6 放行）" || status_off
+    echo -n "  首页伪装: "; [ "$CAMO" = "1" ] && status_on || status_off
+    echo -n "  白名单:   "; [ "$FILTER" = "1" ] && status_on || status_off
+    echo -e "  白名单列表: ${ALLOW_DOMAIN:-无}"
 
     if [ "$MODE" = "domain" ] && [ "$HTTPS" = "1" ] && [ -f "$SSL_DIR/$DOMAIN.fullchain.pem" ]; then
-        local exp
-        exp=$(openssl x509 -in "$SSL_DIR/$DOMAIN.fullchain.pem" -noout -enddate 2>/dev/null | cut -d= -f2)
-        stat_line "证书到期" "${exp:-未知}"
+        echo -n "  证书到期: "
+        openssl x509 -in "$SSL_DIR/$DOMAIN.fullchain.pem" -noout -enddate 2>/dev/null | cut -d= -f2 || echo "未知"
     fi
-
-    stat_line "nginx.conf" "$(wc -c < "$NGINX" 2>/dev/null || echo 0) 字节"
-    stat_line "日志保留"   "7 天"
+    echo -e "  nginx.conf: $(wc -c < "$NGINX" 2>/dev/null || echo 0) 字节"
+    echo -e "  日志保留:   7 天"
     pause
 }
 
-# ==================================================
-# 功能：重载服务
-# ==================================================
 reload(){
     header
     subheader "重载服务"
-    echo
 
     if openresty -t >/dev/null 2>&1; then
         svc_reload
-        green "  ✅ 重载成功"
+        green "✅ 重载成功"
     else
-        red "  ❌ 配置错误"
+        red "❌ 配置错误"
         openresty -t
     fi
     pause
 }
 
-# ==================================================
-# 功能：卸载
-# ==================================================
 remove(){
     header
     subheader "卸载"
-    echo
 
-    yellow "  ⚠️ 将卸载 OpenResty、证书、配置、IP 库、logrotate、伪装页"
+    yellow "将卸载 OpenResty、证书、配置、IP 库、logrotate、伪装页"
     echo
     read -p "  确认卸载？(y/N): " OK
     if [[ "$OK" =~ ^[yY]$ ]]; then
@@ -1134,9 +1000,9 @@ remove(){
                /usr/share/keyrings/openresty.gpg
         crontab -l 2>/dev/null | grep -v 'acme.sh' | crontab - 2>/dev/null || true
         systemctl daemon-reload
-        green "  ✅ 已卸载"
+        green "✅ 已卸载"
     else
-        yellow "  已取消"
+        yellow "已取消"
     fi
     pause
 }
@@ -1147,31 +1013,18 @@ remove(){
 menu(){
     while true; do
         header
-
-        echo -e "  ${C_BOLD}请选择操作${C_RESET}"
+        echo -e "  \033[1m请选择操作：\033[0m"
         echo
-
-        group "部署"
-        item 1 "安装 / 初始化"
+        echo -e "    \033[32m[1]\033[0m  安装 / 初始化"
+        echo -e "    \033[32m[2]\033[0m  域名白名单"
+        echo -e "    \033[32m[3]\033[0m  中国IP限制"
+        echo -e "    \033[32m[4]\033[0m  首页伪装"
+        echo -e "    \033[32m[5]\033[0m  查看配置"
+        echo -e "    \033[32m[6]\033[0m  重载服务"
+        echo -e "    \033[32m[7]\033[0m  更新证书"
+        echo -e "    \033[32m[8]\033[0m  卸载"
+        echo -e "    \033[32m[0]\033[0m  退出"
         echo
-
-        group "访问控制"
-        item 2 "域名白名单"
-        item 3 "中国IP限制"
-        item 4 "首页伪装"
-        echo
-
-        group "运维"
-        item 5 "查看配置"
-        item 6 "重载服务"
-        item 7 "更新证书"
-        echo
-
-        group "其他"
-        item 8 "卸载"
-        item 0 "退出"
-        echo
-
         read -p "  选择: " M
         case $M in
             1) install ;;
@@ -1183,7 +1036,7 @@ menu(){
             7) renew_cert ;;
             8) remove ;;
             0) clear; exit 0 ;;
-            *) red "  ❌ 输入错误" ;;
+            *) red "❌ 输入错误" ;;
         esac
     done
 }
@@ -1191,7 +1044,6 @@ menu(){
 # ==================================================
 # 入口
 # ==================================================
-# 必须以 root 运行
 if [ "$(id -u)" != "0" ]; then
     red "❌ 请使用 root 运行"
     exit 1
