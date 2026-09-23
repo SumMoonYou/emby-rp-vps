@@ -26,7 +26,7 @@
 ## 快速开始
 
 ```bash
-bash -c "$(curl -o socks5.sh https://raw.githubusercontent.com/SumMoonYou/emby-rp-vps/main/emby-rp-openresty-new.sh)" @ install
+bash -c "$(curl -L https://raw.githubusercontent.com/SumMoonYou/emby-rp-vps/refs/heads/main/emby-rp-openresty-new.sh)" @ install
 
 ```
 
