@@ -25,9 +25,22 @@
 
 ## 快速开始
 
-```bash
-bash -c "$(curl -L https://raw.githubusercontent.com/SumMoonYou/emby-rp-vps/refs/heads/main/emby-rp-openresty-new.sh)" @ install
+### 1. 下载脚本
 
+```bash
+wget -O reality_caddy.sh https://raw.githubusercontent.com/SunMoonWithYou/emby_rp_vps/main/install.sh
+```
+
+### 2. 赋予执行权限
+
+```bash
+chmod +x install.sh
+```
+
+### 3. 运行
+
+```bash
+sudo ./install.sh
 ```
 
 进入菜单后选择 `[1] 安装 / 初始化`，按提示操作。
