@@ -28,7 +28,7 @@
 ### 1. 下载脚本
 
 ```bash
-wget -O reality_caddy.sh https://raw.githubusercontent.com/SunMoonWithYou/emby_rp_vps/main/install.sh
+wget -O install.sh https://raw.githubusercontent.com/SunMoonWithYou/emby_rp_vps/main/install.sh
 ```
 
 ### 2. 赋予执行权限
